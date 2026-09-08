@@ -2,3 +2,9 @@ results/
 DSC2026-LegalIR-main/
 dsc_env_huy/
 fine_tune/
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+cache/
