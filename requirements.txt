@@ -1,0 +1,11 @@
+# bat buoc cho reproduce.py (duong nhanh, khong can GPU)
+numpy>=1.26
+scikit-learn>=1.3
+xgboost>=2.0
+torch>=2.0
+transformers>=4.40
+safetensors>=0.4
+
+# chi can khi tai model / chay lai tu model
+gdown>=5.0
+huggingface_hub>=0.23
