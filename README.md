@@ -1,10 +1,10 @@
 # burst_userft_maxrecall — gói tái tạo đầy đủ
 
-Dựng lại chính xác `submission.zip` của cấu hình **`burst_userft_maxrecall`**
-(CV Recall@5 = 0.9561) cho bộ DSC2026 LegalIR.
+Tái tạo cấu hình **`burst_userft_maxrecall`** cho bộ DSC2026 LegalIR: cả phép
+đo **CV (Recall@5 = 0.9561)** lẫn **file submission** (md5 `2fb9a8a3b7`).
 
-Gói có **hai đường chạy**. Đường nhanh không cần GPU, model hay mạng. Đường đầy
-đủ tải model rồi tính lại toàn bộ điểm từ đầu.
+Gói có **ba đường chạy**. Hai đường đầu không cần GPU, model hay mạng — chạy
+trong vài phút. Đường thứ ba tải model rồi tính lại toàn bộ điểm từ đầu.
 
 ---
 
@@ -18,7 +18,28 @@ Python 3.10+.
 
 ---
 
-## Đường 1 — dựng lại từ cache (khuyến nghị)
+## Đường 0 — đo lại CV (0.9561)
+
+```bash
+python evaluate_cv.py
+```
+
+In ra Recall@5 trên 600 query CV, pooled và theo từng block, kèm phán quyết gate:
+
+```
+THAM CHIEU 7 kenh (alpha=0)             0.9536  a:0.9750  b:0.9700  c:0.9700  d:0.9356
+burst_userft_maxrecall (bản đã ship)    0.9561 (+0.0025)  a:0.9750  b:0.9700  c:0.9850  d:0.9356   PASS
+```
+
+- Thời gian: **3–5 phút**, không cần GPU/model/mạng
+- `--all` chạy thêm ablation từng kênh (chỉ +aiteamvn_ft, chỉ +jina_ft, bỏ từng kênh…)
+
+Gate dùng xuyên suốt dự án: **vượt tham chiếu pooled VÀ không block nào tụt**.
+Hai lần trước, "pooled tăng nhưng một block tụt" đều kéo theo leaderboard giảm.
+
+---
+
+## Đường 1 — dựng lại submission từ cache (khuyến nghị)
 
 ```bash
 python reproduce.py
@@ -51,6 +72,27 @@ python run_full_pipeline.py      # ~2 giờ trên GPU 8 GB
 
 `run_full_pipeline.py` xoá 3 cache kênh phụ, chấm lại bằng chính model, rồi gọi
 `reproduce.py`. Dùng khi bạn đổi model, hoặc muốn chứng minh cache không bị sửa tay.
+
+### Đường 2 KHÔNG cho md5 giống hệt — và đó là bình thường
+
+Đã kiểm chứng ngày 2026-09-09: xoá cả 6 cache rồi chấm lại từ model cho kết quả
+
+| kênh | trùng bit với cache cũ | đổi top-5 |
+|---|---|---|
+| `jina_ft` (CV + public) | **100%** | 0 |
+| `aiteamvn_ft` (CV + public) | **100%** | 0 |
+| `title_embed` (CV) | 82.1% (lệch ≤ 6.5e-4) | 6/600 |
+| `title_embed` (public) | 76.1% (lệch ≤ 6.7e-4) | 9/1000 |
+
+Kết quả cuối: **CV vẫn đúng 0.9561**, mọi block y hệt, submission khác đúng
+**1/1000 query** (`q124570`, chỉ ở slot thứ 5) — md5 thành `f9b56b21…`.
+
+Nguyên nhân: `title_embed` encode 7198 tiêu đề trong một lượt batch lớn, thành
+phần batch và padding đổi giữa các lần chạy nên fp16 trên GPU ra khác ở chữ số
+thứ tư. Hai model fine-tune chấm theo từng query nên tất định tuyệt đối.
+
+**Nên: md5 `2fb9a8a3b7` chỉ đảm bảo cho đường 1 (đọc cache).** Đường 2 đúng về
+mặt khoa học nhưng có thể lệch 1-2 query. Nếu cần bản y hệt để nộp, dùng đường 1.
 
 ### Model được tải từ đâu
 
@@ -112,6 +154,7 @@ Ba kênh in đậm là phần thêm so với bản production:
 ## Nội dung gói
 
 ```
+evaluate_cv.py               đường 0: đo Recall@5 trên 600 query CV
 reproduce.py                 đường 1: kiểm tra → dựng → verify md5
 download_models.py           tải model (Drive + Hugging Face)
 run_full_pipeline.py         đường 2: tính lại điểm từ model rồi dựng
