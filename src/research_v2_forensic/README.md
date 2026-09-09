@@ -8,15 +8,18 @@ model checkpoints, or existing caches.
 
 1. `data_contract`: 8,507 retained parent documents; audited duplicate aliases;
    7,000 split members and 6,991 evaluable canonical labels.
-2. `candidate_sources`: one dense task-adapted retriever plus one sparse BM25
-   source. Candidate generation is label-free at scoring time.
+2. `candidate_sources`: one frozen dense retriever plus one sparse BM25 source.
+   Candidate generation is label-free at scoring time. A task-fine-tuned
+   bi-encoder, if tested, is a separate fixed-pool ranking expert.
 3. `evidence_contract`: one query-conditioned selector, one representation, and
    max-dominant parent aggregation. Structural and lexical evidence are an A/B
    contract, not simultaneous feature families.
 4. `reranker`: five fold-specific task-adapted cross-encoders trained with
    boundary hard negatives.
-5. `fusion`: a single low-capacity OOF meta-ranker over source ranks/scores and
-   reranker score. No query-memory, rules, graph propagation, or feature zoo.
+5. `fusion`: absent from the primary pipeline. A single low-capacity meta-ranker
+   is allowed only after a `>=0.005` recoverable-signal gate and must use fully
+   nested upstream scores. No query-memory, rules, graph propagation, or feature
+   zoo.
 6. `selection`: deterministic top five; a set-aware selector is allowed only
    after a preregistered multi-gold gate passes.
 
@@ -41,4 +44,3 @@ Aggregate passage scores with parent `max` in both arms. The experiment is a
 diagnostic gate; do not tune passage counts or blend A and B before the result.
 
 `build_v2_folds.py` creates the immutable split and companion SHA-256 file.
-
