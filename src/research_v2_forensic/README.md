@@ -32,7 +32,7 @@ model checkpoints, or existing caches.
 - LegalIR canonical label policy reference:
   `src/exp030_legal_evidence_routing.canonical_answers`.
 
-## First executable experiment
+## Executed contract
 
 Use identical candidate query-document pairs, identical base cross-encoder,
 identical train pairs, and identical five folds. Compare only:
@@ -43,4 +43,19 @@ identical train pairs, and identical five folds. Compare only:
 Aggregate passage scores with parent `max` in both arms. The experiment is a
 diagnostic gate; do not tune passage counts or blend A and B before the result.
 
-`build_v2_folds.py` creates the immutable split and companion SHA-256 file.
+The full evidence-contract A/B is complete. Lexical evidence beat structural-v3
+by `0.0688743` Recall@5 on the fixed candidate pool and is now immutable for
+boundary training.
+
+Executable files in this namespace:
+
+- `build_v2_executable_baseline.py`: seal retrieval curves and the bounded pool;
+- `run_evidence_contract_ab.py`: score/evaluate the two evidence contracts;
+- `build_v2_boundary_groups.py`: materialize fold-safe positives and negatives;
+- `jina_v2_boundary_train.py`: train/resume/score the Jina-v2 adapter;
+- `stage_kaggle_boundary_bundle.py`: build the hash-locked private Kaggle input.
+
+The final Kaggle bundle is
+`cache/research_v2_forensic/kaggle_input/research-v2-jina-boundary-v2`.
+Remote pilot/full execution remains blocked only by absent Kaggle credentials on
+this host; local forward/backward and exact resume parity pass at 512 tokens.
