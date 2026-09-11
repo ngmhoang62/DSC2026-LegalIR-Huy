@@ -56,6 +56,8 @@ Executable files in this namespace:
 - `stage_kaggle_boundary_bundle.py`: build the hash-locked private Kaggle input.
 
 The final Kaggle bundle is
-`cache/research_v2_forensic/kaggle_input/research-v2-jina-boundary-v2`.
+`cache/research_v2_forensic/kaggle_input/research-v2-jina-boundary-v4`.
+The notebook always writes `PILOT_REPORT.json` and stops for review after Fold 0,
+including on PASS. Full five-fold requires a separate manual approval flag.
 Remote pilot/full execution remains blocked only by absent Kaggle credentials on
 this host; local forward/backward and exact resume parity pass at 512 tokens.
