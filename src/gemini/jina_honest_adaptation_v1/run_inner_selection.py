@@ -51,9 +51,26 @@ import run_huy_5fold_fasttrack as fasttrack_core
 
 
 def extract_cached_query_passages(
-    dataset: LegalRetrievalDataset, qids: List[str]
+    dataset: LegalRetrievalDataset, qids: List[str], cache_name: str = ""
 ) -> Dict[str, Dict[str, Any]]:
     """Pre-extract top Huy passages for query candidate pools to optimize CPU time."""
+    cache_file = (EXP_RESULTS / f"cache/passages_{cache_name}.json") if cache_name else None
+    if cache_file and cache_file.exists():
+        try:
+            raw = json.loads(cache_file.read_text(encoding="utf-8"))
+            cached = {}
+            for qid, item in raw.items():
+                cached[qid] = {
+                    "pool": item["pool"],
+                    "pairs": [tuple(p) for p in item["pairs"]],
+                    "doc_indices": item["doc_indices"],
+                    "gold": set(item["gold"]),
+                }
+            print(f"Loaded {len(cached)} pre-cached queries from {cache_file.name}", flush=True)
+            return cached
+        except Exception as e:
+            print(f"Cache load failed ({e}), recomputing...", flush=True)
+
     cached = {}
     print(f"Pre-caching passages for {len(qids)} queries...", flush=True)
     t0 = time.perf_counter()
@@ -75,6 +92,20 @@ def extract_cached_query_passages(
             "gold": dataset.golds[qid],
         }
     print(f"Pre-caching finished in {time.perf_counter() - t0:.2f}s.", flush=True)
+
+    if cache_file:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        serializable = {}
+        for qid, item in cached.items():
+            serializable[qid] = {
+                "pool": item["pool"],
+                "pairs": [list(p) for p in item["pairs"]],
+                "doc_indices": item["doc_indices"],
+                "gold": list(item["gold"]),
+            }
+        cache_file.write_text(json.dumps(serializable, ensure_ascii=False), encoding="utf-8")
+        print(f"Saved pre-cached passages to {cache_file.name}")
+
     return cached
 
 
@@ -517,8 +548,8 @@ def run_inner_pilot():
                         str(x) for x in (rec.get("order") or rec.get("ranked_docs") or rec.get("predictions"))
                     ]
 
-    val_cached_data = extract_cached_query_passages(dataset, inner_val_qids)
-    lr_train_cached_data = extract_cached_query_passages(dataset, lr_train_qids)
+    val_cached_data = extract_cached_query_passages(dataset, inner_val_qids, cache_name="inner_val_250")
+    lr_train_cached_data = extract_cached_query_passages(dataset, lr_train_qids, cache_name="inner_lr_train_100")
 
     frozen_val_scores = {
         q: {d: dataset.frozen_scores.get((q, d), -1e9) for d in dataset.pools[q]}

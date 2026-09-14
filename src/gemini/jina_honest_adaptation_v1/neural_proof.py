@@ -40,9 +40,10 @@ class NeuralTrainingProofTracker:
         self.gradient_log_samples = 0
         self.nonzero_gradient_samples = 0
 
-    def step_optimizer(self, optimizer: torch.optim.Optimizer) -> None:
-        """Execute optimizer.step() and reliably track actual optimizer steps."""
-        optimizer.step()
+    def step_optimizer(self, optimizer: Optional[torch.optim.Optimizer] = None) -> None:
+        """Execute optimizer.step() if provided, and reliably track actual optimizer steps."""
+        if optimizer is not None:
+            optimizer.step()
         self.actual_optimizer_steps += 1
 
     def before_training(self, model: torch.nn.Module, tok: Any, device: str = "cuda") -> None:
