@@ -443,7 +443,7 @@ def train_and_evaluate_architecture(
 
     ckpt_path = EXP_CHECKPOINTS / f"inner_pilot_{method.lower()}.pt"
     print(f"[{method}] Saving checkpoint to {ckpt_path}...", flush=True)
-    save_jina_checkpoint(model, tok, method, ckpt_path)
+    save_jina_checkpoint(model=model, method=method, save_path=ckpt_path)
 
     print(f"[{method}] Running round-trip reload audit...", flush=True)
     round_trip_res = checkpoint_round_trip_test(

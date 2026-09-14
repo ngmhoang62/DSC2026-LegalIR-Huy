@@ -149,6 +149,7 @@ def save_jina_checkpoint(
     extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Save complete model state without filtering requires_grad (Section 3.2)."""
+    save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
     payload = {
