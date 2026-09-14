@@ -1,6 +1,7 @@
-"""Neural training proof scaffold enforcing Section 7 requirements.
+"""Neural training proof scaffold enforcing Section 7 and Section 3 requirements.
 Captures pre-training, in-training, and post-training parameter shifts,
-gradient norms, audit logits, and hardware utilization.
+all-tensor fingerprints, gradient norms, audit logits with microbatch=4,
+and hardware utilization.
 Produces results/gemini/jina_honest_adaptation_v1/NEURAL_TRAINING_PROOF.json.
 """
 
@@ -32,6 +33,17 @@ class NeuralTrainingProofTracker:
         self.step_records: List[Dict[str, Any]] = []
         self.post_record: Dict[str, Any] = {}
         self.pre_weights: Dict[str, torch.Tensor] = {}
+        self.pre_fingerprints: Dict[str, str] = {}
+
+        # Section 3.3 Bookkeeping: track separately
+        self.actual_optimizer_steps = 0
+        self.gradient_log_samples = 0
+        self.nonzero_gradient_samples = 0
+
+    def step_optimizer(self, optimizer: torch.optim.Optimizer) -> None:
+        """Execute optimizer.step() and reliably track actual optimizer steps."""
+        optimizer.step()
+        self.actual_optimizer_steps += 1
 
     def before_training(self, model: torch.nn.Module, tok: Any, device: str = "cuda") -> None:
         """Capture pre-training state, parameter counts, fingerprints, and frozen audit logits."""
@@ -39,11 +51,12 @@ class NeuralTrainingProofTracker:
         original_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-        # Trainable tensor fingerprints
-        trainable_fingerprints = {}
+        # Trainable tensor fingerprints for ALL trainable parameters (Section 3.3)
+        self.pre_fingerprints = {}
         for name, param in model.named_parameters():
             if param.requires_grad:
-                trainable_fingerprints[name] = tensor_sha256(param)
+                h = tensor_sha256(param)
+                self.pre_fingerprints[name] = h
                 self.pre_weights[name] = param.detach().clone().cpu().float()
 
         # Classifier head fingerprint
@@ -52,12 +65,13 @@ class NeuralTrainingProofTracker:
             if "classifier" in name or "score" in name:
                 classifier_fingerprint[name] = tensor_sha256(param)
 
-        # Frozen audit logits on 256 pairs
+        # Frozen audit logits on 256 pairs with microbatch <= 4 (Section 3.1)
         model.eval()
         audit_logits = []
+        micro_bs = 4
         with torch.no_grad():
-            for i in range(0, len(self.audit_pairs), 32):
-                batch = self.audit_pairs[i : i + 32]
+            for i in range(0, len(self.audit_pairs), micro_bs):
+                batch = self.audit_pairs[i : i + micro_bs]
                 inputs = tok(
                     [p[0] for p in batch],
                     [p[1] for p in batch],
@@ -69,17 +83,28 @@ class NeuralTrainingProofTracker:
                 logits = model(**inputs).logits.view(-1).float().cpu().tolist()
                 audit_logits.extend(logits)
 
+        # Audit-pair diversity verification (Section 3.4)
+        unique_queries = len(set(p[0] for p in self.audit_pairs))
+        unique_passages = len(set(hashlib.sha256(p[1].encode("utf-8")).hexdigest() for p in self.audit_pairs))
+        frozen_logit_std = float(np.std(audit_logits)) if audit_logits else 0.0
+
         self.pre_record = {
             "model_class": model.__class__.__name__,
             "total_parameter_count": original_params,
             "trainable_parameter_count": trainable_params,
             "trainable_parameter_fraction": trainable_params / original_params,
-            "trainable_tensor_count": len(trainable_fingerprints),
+            "trainable_tensor_count": len(self.pre_fingerprints),
             "trainable_fingerprints_sample": {
-                k: trainable_fingerprints[k] for k in list(trainable_fingerprints.keys())[:10]
+                k: self.pre_fingerprints[k] for k in list(self.pre_fingerprints.keys())[:10]
             },
             "classifier_fingerprint": classifier_fingerprint,
             "audit_pairs_count": len(self.audit_pairs),
+            "audit_pairs_diversity": {
+                "unique_query_count": unique_queries,
+                "unique_passage_count": unique_passages,
+                "frozen_logit_std": frozen_logit_std,
+                "diversity_verified": unique_queries >= 200 and unique_passages >= 200,
+            },
             "frozen_audit_logits_sample": audit_logits[:10],
             "_frozen_audit_logits": audit_logits,
         }
@@ -109,6 +134,10 @@ class NeuralTrainingProofTracker:
         nonzero_fraction = (nonzero_grads / total_grads) if total_grads > 0 else 0.0
         peak_vram = torch.cuda.max_memory_allocated() / (1024**2)
 
+        self.gradient_log_samples += 1
+        if total_grad_norm > 0:
+            self.nonzero_gradient_samples += 1
+
         self.step_records.append(
             {
                 "step": step,
@@ -137,6 +166,7 @@ class NeuralTrainingProofTracker:
         tensors_changed = 0
         l2_delta_sq = 0.0
 
+        # Compare ALL trainable tensors (Section 3.3)
         for name, param in model.named_parameters():
             if param.requires_grad:
                 h = tensor_sha256(param)
@@ -146,16 +176,17 @@ class NeuralTrainingProofTracker:
                     post = param.detach().clone().cpu().float()
                     diff = (post - pre).norm(2).item()
                     l2_delta_sq += diff**2
-                    if h != self.pre_record.get("trainable_fingerprints_sample", {}).get(name, ""):
+                    if name in self.pre_fingerprints and h != self.pre_fingerprints[name]:
                         tensors_changed += 1
 
         total_l2_delta = float(np.sqrt(l2_delta_sq))
 
-        # Adapted audit logits on 256 pairs
+        # Adapted audit logits on 256 pairs with microbatch <= 4 (Section 3.1)
         adapted_audit_logits = []
+        micro_bs = 4
         with torch.no_grad():
-            for i in range(0, len(self.audit_pairs), 32):
-                batch = self.audit_pairs[i : i + 32]
+            for i in range(0, len(self.audit_pairs), micro_bs):
+                batch = self.audit_pairs[i : i + micro_bs]
                 inputs = tok(
                     [p[0] for p in batch],
                     [p[1] for p in batch],
@@ -172,8 +203,6 @@ class NeuralTrainingProofTracker:
         mean_abs_logit_change = float(np.mean(logit_diffs)) if logit_diffs else 0.0
         max_abs_logit_change = float(np.max(logit_diffs)) if logit_diffs else 0.0
 
-        optimizer_steps = len(self.step_records)
-        nonzero_steps = sum(1 for s in self.step_records if s["total_grad_norm"] > 0)
         mean_grad_norm = (
             float(np.mean([s["total_grad_norm"] for s in self.step_records]))
             if self.step_records
@@ -181,14 +210,15 @@ class NeuralTrainingProofTracker:
         )
 
         neural_proof_passed = (
-            optimizer_steps > 0
-            and nonzero_steps > 0
+            self.actual_optimizer_steps > 0
+            and self.nonzero_gradient_samples > 0
             and total_l2_delta > 1e-4
             and mean_abs_logit_change > 1e-3
+            and tensors_changed > 0
         )
 
         report = {
-            "schema_version": "dsc2026.gemini.neural_training_proof.v1",
+            "schema_version": "dsc2026.gemini.neural_training_proof.v2",
             "status": "PASS" if neural_proof_passed else "NEURAL_TRAINING_NOT_EXECUTED",
             "stage": self.stage_name,
             "device": torch.cuda.get_device_name(0),
@@ -199,10 +229,12 @@ class NeuralTrainingProofTracker:
                 "trainable_fraction": self.pre_record["trainable_parameter_fraction"],
                 "trainable_tensor_count": self.pre_record["trainable_tensor_count"],
                 "classifier_fingerprint": self.pre_record["classifier_fingerprint"],
+                "audit_pairs_diversity": self.pre_record.get("audit_pairs_diversity"),
             },
             "training_dynamics": {
-                "optimizer_steps": optimizer_steps,
-                "nonzero_gradient_steps": nonzero_steps,
+                "actual_optimizer_steps": self.actual_optimizer_steps,
+                "gradient_log_samples": self.gradient_log_samples,
+                "nonzero_gradient_samples": self.nonzero_gradient_samples,
                 "mean_grad_norm": mean_grad_norm,
                 "initial_loss": self.step_records[0]["loss"] if self.step_records else None,
                 "final_loss": self.step_records[-1]["loss"] if self.step_records else None,
@@ -214,7 +246,9 @@ class NeuralTrainingProofTracker:
                 "step_trace_sample": self.step_records[:5] + self.step_records[-5:],
             },
             "parameter_shift_verification": {
+                "total_trainable_tensors": len(self.pre_fingerprints),
                 "tensors_changed": tensors_changed,
+                "all_tensors_changed": tensors_changed == len(self.pre_fingerprints),
                 "total_l2_parameter_delta": total_l2_delta,
                 "audit_pairs_count": len(self.audit_pairs),
                 "mean_abs_logit_change": mean_abs_logit_change,

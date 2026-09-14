@@ -140,3 +140,115 @@ def compute_group_loss(
 
     total_loss = l_rank + lambda_anchor * l_anchor
     return total_loss, l_rank, l_anchor
+
+
+def save_jina_checkpoint(
+    model: nn.Module,
+    method: str,
+    save_path: Path,
+    extra: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Save complete model state without filtering requires_grad (Section 3.2)."""
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+    payload = {
+        "method": method,
+        "state_dict": state,
+        "extra": extra or {},
+    }
+    torch.save(payload, save_path)
+
+
+def load_jina_checkpoint(
+    checkpoint_path: Path,
+    model_path: Path,
+    device: str = "cuda",
+    dtype: torch.dtype = torch.bfloat16,
+) -> Tuple[nn.Module, Any]:
+    """Reconstruct base architecture and restore complete state dict (Section 3.2)."""
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    method = payload["method"]
+    model, tok = build_model(method, model_path, rank=16, dtype=dtype, device=device)
+    incompatible = model.load_state_dict(payload["state_dict"], strict=True)
+    if incompatible.missing_keys or incompatible.unexpected_keys:
+        raise RuntimeError(f"Checkpoint reload mismatch: {incompatible}")
+    model.eval()
+    return model, tok
+
+
+def checkpoint_round_trip_test(
+    model: nn.Module,
+    tok: Any,
+    audit_pairs: List[Tuple[str, str]],
+    method: str,
+    model_path: Path,
+    test_path: Path,
+    device: str = "cuda",
+) -> Dict[str, Any]:
+    """Enforces Section 3.2 round-trip serialization audit."""
+    import gc
+
+    model.eval()
+    original_logits = []
+    with torch.no_grad():
+        for i in range(0, len(audit_pairs), 4):
+            batch = audit_pairs[i : i + 4]
+            inp = tok(
+                [b[0] for b in batch],
+                [b[1] for b in batch],
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+            ).to(device)
+            original_logits.extend(model(**inp).logits.view(-1).float().cpu().tolist())
+
+    save_jina_checkpoint(model, method, test_path)
+
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    reloaded_model, reloaded_tok = load_jina_checkpoint(test_path, model_path, device=device)
+
+    reloaded_logits = []
+    with torch.no_grad():
+        for i in range(0, len(audit_pairs), 4):
+            batch = audit_pairs[i : i + 4]
+            inp = reloaded_tok(
+                [b[0] for b in batch],
+                [b[1] for b in batch],
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+            ).to(device)
+            reloaded_logits.extend(reloaded_model(**inp).logits.view(-1).float().cpu().tolist())
+
+    diffs = [abs(o - r) for o, r in zip(original_logits, reloaded_logits)]
+    max_diff = float(max(diffs)) if diffs else 0.0
+
+    docs = [f"doc_{i:04d}" for i in range(len(audit_pairs))]
+    orig_order = sorted(docs, key=lambda d: (-original_logits[int(d[4:])], d))
+    relo_order = sorted(docs, key=lambda d: (-reloaded_logits[int(d[4:])], d))
+    ranking_match = orig_order == relo_order
+
+    if test_path.exists():
+        test_path.unlink()
+
+    del reloaded_model
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    if not ranking_match or max_diff > 1e-4:
+        raise RuntimeError(
+            f"Checkpoint round-trip audit FAILED: max_diff={max_diff:.8e}, ranking_match={ranking_match}"
+        )
+
+    return {
+        "status": "PASS",
+        "method": method,
+        "audit_pairs_tested": len(audit_pairs),
+        "max_logit_difference": max_diff,
+        "ranking_identical": ranking_match,
+    }

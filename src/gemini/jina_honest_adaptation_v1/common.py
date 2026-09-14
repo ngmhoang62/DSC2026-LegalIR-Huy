@@ -59,6 +59,56 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def get_os_gpu_memory() -> Dict[str, Any]:
+    """Query OS-level Dedicated and Shared GPU memory via nvidia-smi and Windows performance counters."""
+    res = {}
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.total,memory.used,memory.free", "--format=csv,noheader,nounits"],
+            text=True,
+        ).strip()
+        tot, used, free = [float(x.strip()) for x in out.split(",")]
+        res["nvidia_smi"] = {"total_mb": tot, "used_mb": used, "free_mb": free}
+    except Exception as e:
+        res["nvidia_smi"] = {"error": str(e)}
+
+    try:
+        cmd = "Get-Counter '\\GPU Non Local Adapter Memory(*)\\Non Local Usage' | Select-Object -ExpandProperty CounterSamples | Select-Object InstanceName, CookedValue | ConvertTo-Json"
+        out = subprocess.check_output(["powershell", "-Command", cmd], text=True)
+        data = json.loads(out)
+        if isinstance(data, dict):
+            data = [data]
+        shared_mb = sum(
+            item["CookedValue"] / (1024**2)
+            for item in data
+            if "phys_0" in item.get("InstanceName", "")
+        )
+        if shared_mb == 0 and data:
+            shared_mb = data[0]["CookedValue"] / (1024**2)
+        res["windows_shared_gpu_memory_mb"] = round(shared_mb, 2)
+    except Exception as e:
+        res["windows_shared_gpu_memory_mb"] = None
+        res["windows_shared_error"] = str(e)
+    return res
+
+
+def init_execution_trace(reuse_parity_sha: Optional[str] = None) -> None:
+    """Reinitialize EXECUTION_TRACE.jsonl for the current experiment."""
+    trace_path = EXP_RESULTS / "EXECUTION_TRACE.jsonl"
+    with open(trace_path, "w", encoding="utf-8") as f:
+        if reuse_parity_sha:
+            entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "stage": "REUSE_FROZEN_PARITY",
+                "status": "PASS",
+                "reused_artifact": "FROZEN_JINA_PARITY.json",
+                "reused_artifact_sha256": reuse_parity_sha,
+                "note": "Reusing verified pre-training parity results under identical contracts",
+                "git": get_git_info(),
+            }
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
 def log_execution_trace(
     stage_name: str,
     command: str,
