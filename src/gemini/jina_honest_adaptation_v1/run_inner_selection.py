@@ -233,94 +233,71 @@ def evaluate_inner_endpoint_integration(
     val_qids: List[str],
     pools: Dict[str, List[str]],
     golds: Dict[str, Set[str]],
+    feat_npz_path: Path,
 ) -> Dict[str, Any]:
     """Compute inner-val endpoint integration diagnostics (J0, J1, J2, J3) via balanced LR."""
-    all_target_qids = set(train_qids) | set(val_qids)
-    sub_pools = {q: pools[q] for q in all_target_qids if q in pools}
+    feat_data = np.load(feat_npz_path)
+    all_target_qids = list(train_qids) + list(val_qids)
+    combined_scores = {**adapted_scores_train, **adapted_scores_val}
 
-    rank_features: Dict[str, Dict[str, np.ndarray]] = {}
-    score_features: Dict[str, Dict[str, np.ndarray]] = {}
+    rows_j0: Dict[str, np.ndarray] = {}
+    rows_j1: Dict[str, np.ndarray] = {}
+    rows_j2: Dict[str, np.ndarray] = {}
+    rows_j3: Dict[str, np.ndarray] = {}
 
-    for name in fasttrack_core.CHANNEL_SPECS:
-        omap, raw, _ = fasttrack_core.load_source_channel(name, sub_pools)
-        rank_features[name] = fasttrack_core.rank_columns(omap, sub_pools)
-        score_features[name] = fasttrack_core.score_columns(raw, sub_pools)
+    for qid in all_target_qids:
+        base_row = feat_data[f"row_{qid}"]
+        pool = pools[qid]
+        scores = combined_scores.get(qid, {})
 
-    e5_orders, e5_scores = {}, {}
-    for i, p in fasttrack_core.adapted_paths():
-        if p.exists():
-            for line in fasttrack_core.read_jsonl(p):
-                qid = str(line["qid"])
-                if qid in sub_pools:
-                    e5_orders[qid] = [str(x) for x in line["order"]]
-                    e5_scores[qid] = {str(d): float(s) for d, s in line["scores"].items()}
+        # Adapted rank features (cols 0, 1): reciprocal rank & normalized rank
+        ranked_docs = sorted(pool, key=lambda d: (-scores.get(d, -1e9), d))
+        ranks = {doc: i + 1 for i, doc in enumerate(ranked_docs)}
+        rank_vals = np.asarray([ranks.get(d, 60) for d in pool], dtype=np.float32)
+        adapted_rank_cols = np.column_stack((1.0 / (10.0 + rank_vals), rank_vals / 60.0)).astype(np.float32)
 
-    rank_features["adapted_e5"] = fasttrack_core.rank_columns(e5_orders, sub_pools)
-    score_features["adapted_e5"] = fasttrack_core.score_columns(e5_scores, sub_pools)
-    if "e5_dense" in rank_features:
-        rank_features["frozen_e5"] = rank_features["e5_dense"]
-        score_features["frozen_e5"] = score_features["e5_dense"]
+        # Adapted score features (cols 16, 17): within-query z-score & margin-to-top
+        raw = np.asarray([scores.get(d, np.nan) for d in pool], dtype=np.float64)
+        pres = raw[~np.isnan(raw)]
+        m = float(pres.mean()) if pres.size else 0.0
+        s = float(pres.std()) or 1.0 if pres.size else 1.0
+        top = float(pres.max()) if pres.size else 0.0
+        filled = np.where(np.isnan(raw), m - 2 * s, raw)
+        adapted_score_cols = np.column_stack(((filled - m) / s, (filled - top) / s)).astype(np.float32)
 
-    j_orders, j_scores, _ = fasttrack_core.load_jina(sub_pools)
-    rank_features["frozen_jina"] = fasttrack_core.rank_columns(j_orders, sub_pools)
-    score_features["frozen_jina"] = fasttrack_core.score_columns(j_scores, sub_pools)
+        # J0: Authoritative baseline 44D
+        rows_j0[qid] = base_row.copy()
 
-    combined_adapted_scores = {**adapted_scores_train, **adapted_scores_val}
-    combined_adapted_orders = {
-        q: sorted(sub_pools[q], key=lambda d: (-combined_adapted_scores[q].get(d, -1e9), d))
-        for q in sub_pools
-    }
-    rank_features["adapted_jina"] = fasttrack_core.rank_columns(combined_adapted_orders, sub_pools)
-    score_features["adapted_jina"] = fasttrack_core.score_columns(combined_adapted_scores, sub_pools)
+        # J1_REPLACE: Replace frozen Jina rank (0:2) and score (16:18)
+        r1 = base_row.copy()
+        r1[:, 0:2] = adapted_rank_cols
+        r1[:, 16:18] = adapted_score_cols
+        rows_j1[qid] = r1
 
-    residual_features = {}
-    for q in sub_pools:
-        f_z = score_features["frozen_jina"][q][:, 0]
-        a_z = score_features["adapted_jina"][q][:, 0]
-        f_r = rank_features["frozen_jina"][q][:, 1] * 60.0
-        a_r = rank_features["adapted_jina"][q][:, 1] * 60.0
-        residual_features[q] = np.column_stack((a_z - f_z, a_r - f_r)).astype(np.float32)
+        # J2_AUGMENT: Baseline 44D + adapted rank (2 cols) + adapted score (2 cols) = 48D
+        rows_j2[qid] = np.column_stack((base_row, adapted_rank_cols, adapted_score_cols)).astype(np.float32)
 
-    metadata = {
-        "document_types": {q: np.zeros((len(sub_pools[q]), 17), dtype=np.float32) for q in sub_pools},
-        "citation_count": {q: np.zeros((len(sub_pools[q]), 3), dtype=np.float32) for q in sub_pools},
-    }
-
-    j0_cfg = fasttrack_core.make_config(
-        ("frozen_e5", "adapted_e5", "bge_m3_dense", "monot5_reranker", "bge_reranker_large", "frozen_jina"),
-        ("frozen_e5", "adapted_e5", "bge_m3_dense", "monot5_reranker", "bge_reranker_large", "frozen_jina"),
-        (),
-    )
-    j1_cfg = fasttrack_core.make_config(
-        ("frozen_e5", "adapted_e5", "bge_m3_dense", "monot5_reranker", "bge_reranker_large", "adapted_jina"),
-        ("frozen_e5", "adapted_e5", "bge_m3_dense", "monot5_reranker", "bge_reranker_large", "adapted_jina"),
-        (),
-    )
-    j2_cfg = fasttrack_core.make_config(
-        ("frozen_e5", "adapted_e5", "bge_m3_dense", "monot5_reranker", "bge_reranker_large", "frozen_jina", "adapted_jina"),
-        ("frozen_e5", "adapted_e5", "bge_m3_dense", "monot5_reranker", "bge_reranker_large", "frozen_jina", "adapted_jina"),
-        (),
-    )
+        # J3_RESIDUAL: J2 (48D) + residual cols (adapted_z - frozen_z, adapted_r - frozen_r) = 50D
+        frozen_z = base_row[:, 16]
+        frozen_r = base_row[:, 1] * 60.0
+        adapted_z = adapted_score_cols[:, 0]
+        adapted_r = adapted_rank_cols[:, 1] * 60.0
+        residual_cols = np.column_stack((adapted_z - frozen_z, adapted_r - frozen_r)).astype(np.float32)
+        rows_j3[qid] = np.column_stack((rows_j2[qid], residual_cols)).astype(np.float32)
 
     arms = [
-        ("J0_FROZEN_BASELINE", j0_cfg, False),
-        ("J1_REPLACE", j1_cfg, False),
-        ("J2_AUGMENT", j2_cfg, False),
-        ("J3_RESIDUAL", j2_cfg, True),
+        ("J0_FROZEN_BASELINE", rows_j0),
+        ("J1_REPLACE", rows_j1),
+        ("J2_AUGMENT", rows_j2),
+        ("J3_RESIDUAL", rows_j3),
     ]
 
     diagnostics = {}
-    for arm_name, cfg, is_residual in arms:
-        rows = fasttrack_core.make_rows(cfg, sub_pools, rank_features, score_features, metadata)
-        if is_residual:
-            for q in sub_pools:
-                rows[q] = np.column_stack((rows[q], residual_features[q])).astype(np.float32)
-
-        x_tr = np.vstack([rows[q] for q in train_qids if q in rows])
+    for arm_name, row_dict in arms:
+        x_tr = np.vstack([row_dict[q] for q in train_qids])
         y_tr = np.concatenate([
-            np.asarray([d in golds[q] for d in sub_pools[q]], dtype=np.int8)
+            np.asarray([d in golds[q] for d in pools[q]], dtype=np.int8)
             for q in train_qids
-            if q in rows
         ])
 
         scaler = StandardScaler().fit(x_tr)
@@ -330,10 +307,8 @@ def evaluate_inner_endpoint_integration(
 
         val_r5 = []
         for q in val_qids:
-            if q not in rows:
-                continue
-            dec = clf.decision_function(scaler.transform(rows[q]))
-            docs = sub_pools[q]
+            dec = clf.decision_function(scaler.transform(row_dict[q]))
+            docs = pools[q]
             ranked = sorted(docs, key=lambda d: (-dec[docs.index(d)], d))
             hits = len(set(ranked[:5]) & golds[q])
             val_r5.append(hits / len(golds[q]))
@@ -483,6 +458,7 @@ def train_and_evaluate_architecture(
         val_qids=inner_val_qids,
         pools=dataset.pools,
         golds=dataset.golds,
+        feat_npz_path=REPO_ROOT / "results/gemini/rabr_v1/cache/BASELINE_FEATURE_ROWS.npz",
     )
 
     total_runtime = time.perf_counter() - t_start
