@@ -116,9 +116,9 @@ def validate_submission_zip(zip_path: Path, json_path: Path, valid_docs: Set[str
 def audit_public_churn(
     qids: List[str],
     m0_cand: Dict[str, List[str]],
-    m0_scores: Dict[str, Dict[str, float]],
+    m0_scores: Dict[str, np.ndarray],
     arm_cand: Dict[str, List[str]],
-    arm_scores: Dict[str, Dict[str, float]],
+    arm_scores: Dict[str, np.ndarray],
 ) -> Dict[str, Any]:
     changed_top5_sets = 0
     changed_ordered = 0
@@ -126,6 +126,7 @@ def audit_public_churn(
     entering_docs = 0
     leaving_docs = 0
     jaccards = []
+    margin_diffs = []
 
     for q in qids:
         c0 = m0_cand[q]
@@ -147,6 +148,21 @@ def audit_public_churn(
         jacc = len(s0 & s1) / len(s0 | s1) if (s0 | s1) else 1.0
         jaccards.append(jacc)
 
+        s_arr0 = np.sort(m0_scores[q])[::-1]
+        s_arr1 = np.sort(arm_scores[q])[::-1]
+        if len(s_arr0) >= 6 and len(s_arr1) >= 6:
+            margin0 = float(s_arr0[4] - s_arr0[5])
+            margin1 = float(s_arr1[4] - s_arr1[5])
+            margin_diffs.append(margin1 - margin0)
+
+    margin_stats = {
+        "mean_margin_diff": float(np.mean(margin_diffs)) if margin_diffs else 0.0,
+        "median_margin_diff": float(np.median(margin_diffs)) if margin_diffs else 0.0,
+        "std_margin_diff": float(np.std(margin_diffs)) if margin_diffs else 0.0,
+        "min_margin_diff": float(np.min(margin_diffs)) if margin_diffs else 0.0,
+        "max_margin_diff": float(np.max(margin_diffs)) if margin_diffs else 0.0,
+    }
+
     return {
         "total_queries": len(qids),
         "changed_top5_sets": changed_top5_sets,
@@ -157,6 +173,7 @@ def audit_public_churn(
         "entering_docs_count": entering_docs,
         "leaving_docs_count": leaving_docs,
         "rank5_boundary_changes": rank5_boundary,
+        "rank5_rank6_margin_distribution": margin_stats,
     }
 
 
@@ -203,7 +220,7 @@ def run_public_materialization() -> Dict[str, Any]:
     own, cited = build_citation_table(docs, all_ids, extended)
     cite_rows = citation_features(extended, own, cited, all_ids)
 
-    base_d1_rows, _ = ltr_features(
+    base_d1_rows, d1_groups = ltr_features(
         local_views, D1_VIEWS, extended, all_ids, full_channels_cv
     )
 
@@ -377,41 +394,53 @@ def run_public_materialization() -> Dict[str, Any]:
         },
     }
 
-    def load_aligned_pub(rel_path: str, floor=None):
-        obj = load_pkl(rel_path)
-        fl = floor if floor is not None else min(v for q in obj for v in obj[q].values())
-        return {
-            q: {d: obj.get(q, {}).get(d, fl) for d in public_candidates[q]}
-            for q in public_ids
-        }
+    three_view_pub = load_pkl("results/burst_gpu_threeview/gpu_scores.checkpoint.pkl")
+    crossenc_pub = load_pkl("results/crossenc_fullpool/public_scores.pkl")
+    floor_ce_pub = min(min(v.values()) for v in crossenc_cv.values() if v)
 
-    full_channels_pub = {
-        "bm25": load_aligned_pub("results/burst_gpu_threeview/cpu_top20.pkl"),
-        "e5": load_aligned_pub("results/burst_dense_e5/dense_e5_scores.pkl"),
-        "trigram": load_aligned_pub("results/burst_trigram_baseline/trigram_scores.pkl"),
-        "crossenc": rerank_scores_pub["jina"],
-        "expanded": expansion_scores_pub,
-        "corpus": corpus_score_pub,
+    public_scores_base = {
+        "jina": rerank_scores_pub["jina"],
         "dense": rerank_scores_pub["dense"],
-        "vnlegal_lal": {
-            q: {d: vnlegal_pub.get(q, {}).get(d, -1e9) for d in public_candidates[q]}
+        "expansion": expansion_scores_pub,
+        "e5": {q: three_view_pub[q]["e5"] for q in public_ids},
+        "corpus": {
+            q: {d: corpus_score_pub[q].get(d, -1.0) for d in public_candidates[q]}
+            for q in public_ids
+        },
+        "vnlegal_lal": vnlegal_pub,
+        "crossenc": {
+            q: {
+                d: crossenc_pub.get(q, {}).get(d, floor_ce_pub)
+                for d in public_candidates[q]
+            }
             for q in public_ids
         },
     }
-    for name, rel in EXTRA_PUB_PATHS.items():
-        full_channels_pub[name] = load_aligned_pub(rel)
 
-    type_table_pub = build_type_table(ROOT, docs, public_ids, public_candidates)
-    type_rows_pub = type_features(
-        public_candidates, type_table_pub, public_meta, public_ids
+    for name, pub_rel in EXTRA_PUB_PATHS.items():
+        raw_p = load_pkl(pub_rel)
+        fl_p = min(v for q in raw_p for v in raw_p[q].values())
+        public_scores_base[name] = {
+            q: {d: raw_p.get(q, {}).get(d, fl_p) for d in public_candidates[q]}
+            for q in public_ids
+        }
+
+    # Public metadata features
+    print("Building public doctype and citation features...", flush=True)
+    public_queries_meta = {q: (public_meta[q], set()) for q in public_ids}
+    public_types = build_type_table(ROOT, docs, public_ids, public_candidates)
+    public_t_rows = type_features(
+        public_candidates, public_types, public_queries_meta, public_ids
     )
-    own_pub, cited_pub = build_citation_table(docs, public_ids, public_candidates)
-    cite_rows_pub = citation_features(
-        public_candidates, own_pub, cited_pub, public_ids
+    public_own, public_cited = build_citation_table(
+        docs, public_ids, public_candidates
+    )
+    public_c_rows = citation_features(
+        public_candidates, public_own, public_cited, public_ids
     )
 
     base_pub_rows, _ = ltr_features(
-        view_rank_pub, D1_VIEWS, public_candidates, public_ids, full_channels_pub
+        view_rank_pub, D1_VIEWS, public_candidates, public_ids, public_scores_base
     )
 
     # 3. Public Memory Features
@@ -437,7 +466,7 @@ def run_public_materialization() -> Dict[str, Any]:
 
     # 4. Predict on Public for M0, M1, M2
     predictions_pub: Dict[str, Dict[str, List[str]]] = {}
-    scores_pub: Dict[str, Dict[str, Dict[str, float]]] = {}
+    scores_pub: Dict[str, Dict[str, np.ndarray]] = {}
 
     for arm in ["M0_D1_BASELINE", "M1_D1_PLUS_LAL_MEMORY", "M2_D1_PLUS_LAL_MEMORY_NO_DOCTYPE"]:
         predictions_pub[arm] = {}
@@ -447,31 +476,30 @@ def run_public_materialization() -> Dict[str, Any]:
             scaler = scaler_m0
             model = model_m0
             rows = {
-                q: np.concatenate([base_pub_rows[q], type_rows_pub[q], cite_rows_pub[q]], axis=1)
+                q: np.concatenate([base_pub_rows[q], public_t_rows[q], public_c_rows[q]], axis=1)
                 for q in public_ids
             }
         elif arm == "M1_D1_PLUS_LAL_MEMORY":
             scaler = scaler_m1
             model = model_m1
             rows = {
-                q: np.concatenate([base_pub_rows[q], type_rows_pub[q], cite_rows_pub[q], pub_mem_rows[q]], axis=1)
+                q: np.concatenate([base_pub_rows[q], public_t_rows[q], public_c_rows[q], pub_mem_rows[q]], axis=1)
                 for q in public_ids
             }
         elif arm == "M2_D1_PLUS_LAL_MEMORY_NO_DOCTYPE":
             scaler = scaler_m2
             model = model_m2
             rows = {
-                q: np.concatenate([base_pub_rows[q], cite_rows_pub[q], pub_mem_rows[q]], axis=1)
+                q: np.concatenate([base_pub_rows[q], public_c_rows[q], pub_mem_rows[q]], axis=1)
                 for q in public_ids
             }
 
         for q in public_ids:
-            docs_q = public_candidates[q]
-            vals = model.decision_function(scaler.transform(rows[q]))
-            order = np.lexsort((np.asarray(docs_q), -vals))
-            ordered_docs = [docs_q[i] for i in order]
-            predictions_pub[arm][q] = ordered_docs[:5]
-            scores_pub[arm][q] = {docs_q[i]: float(vals[i]) for i in range(len(docs_q))}
+            scores = model.decision_function(scaler.transform(rows[q]))
+            scores_pub[arm][q] = scores
+            order = np.argsort(-scores)
+            fused = [public_candidates[q][i] for i in order]
+            predictions_pub[arm][q] = [d for d in fused if d in valid_docs][:5]
 
     # 5. Public Parity Check vs Previous D1 Candidate
     if not D1_PREVIOUS_CANDIDATE.exists():
