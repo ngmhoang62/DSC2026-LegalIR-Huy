@@ -189,10 +189,10 @@ def render_decision_md(
 | **Q2_PAIRWISE_PLUS_PROFILE** | {dual_cal['historical_cal']['q2_pairwise_plus_profile']['feature_dim']}D | {hist_q2['pooled_recall_at_5']:.6f} | {hist_q2['pooled_recall_at_5'] - hist_q0['pooled_recall_at_5']:+.6f} | {hist_q2['pooled_precision_at_5']:.6f} | {hist_q2['single_gold_recall_at_5']:.6f} | {hist_q2['multi_gold_recall_at_5']:.6f} | {dual_cal['historical_cal']['q2_pairwise_plus_profile']['comparison_vs_q0']['wins']} / {dual_cal['historical_cal']['q2_pairwise_plus_profile']['comparison_vs_q0']['losses']} / {dual_cal['historical_cal']['q2_pairwise_plus_profile']['comparison_vs_q0']['ties']} | {hist_q2['distance_to_0_96']:+.6f} |
 
 #### Historical Block Breakdown
-- **Block A**: Q0 = `{hist_q0['blocks']['A']:.6f}` | Q1 = `{hist_q1['blocks']['A']:.6f}` (`{hist_q1['blocks']['A'] - hist_q0['blocks']['A']:+.6f}`) | Q2 = `{hist_q2['blocks']['A']:.6f}` (`{hist_q2['blocks']['A'] - hist_q0['blocks']['A']:+.6f}`)
-- **Block B**: Q0 = `{hist_q0['blocks']['B']:.6f}` | Q1 = `{hist_q1['blocks']['B']:.6f}` (`{hist_q1['blocks']['B'] - hist_q0['blocks']['B']:+.6f}`) | Q2 = `{hist_q2['blocks']['B']:.6f}` (`{hist_q2['blocks']['B'] - hist_q0['blocks']['B']:+.6f}`)
-- **Block C**: Q0 = `{hist_q0['blocks']['C']:.6f}` | Q1 = `{hist_q1['blocks']['C']:.6f}` (`{hist_q1['blocks']['C'] - hist_q0['blocks']['C']:+.6f}`) | Q2 = `{hist_q2['blocks']['C']:.6f}` (`{hist_q2['blocks']['C'] - hist_q0['blocks']['C']:+.6f}`)
-- **Block D**: Q0 = `{hist_q0['blocks']['D']:.6f}` | Q1 = `{hist_q1['blocks']['D']:.6f}` (`{hist_q1['blocks']['D'] - hist_q0['blocks']['D']:+.6f}`) | Q2 = `{hist_q2['blocks']['D']:.6f}` (`{hist_q2['blocks']['D'] - hist_q0['blocks']['D']:+.6f}`)
+- **Block A**: Q0 = `{hist_q0['blocks']['a']:.6f}` | Q1 = `{hist_q1['blocks']['a']:.6f}` (`{hist_q1['blocks']['a'] - hist_q0['blocks']['a']:+.6f}`) | Q2 = `{hist_q2['blocks']['a']:.6f}` (`{hist_q2['blocks']['a'] - hist_q0['blocks']['a']:+.6f}`)
+- **Block B**: Q0 = `{hist_q0['blocks']['b']:.6f}` | Q1 = `{hist_q1['blocks']['b']:.6f}` (`{hist_q1['blocks']['b'] - hist_q0['blocks']['b']:+.6f}`) | Q2 = `{hist_q2['blocks']['b']:.6f}` (`{hist_q2['blocks']['b'] - hist_q0['blocks']['b']:+.6f}`)
+- **Block C**: Q0 = `{hist_q0['blocks']['c']:.6f}` | Q1 = `{hist_q1['blocks']['c']:.6f}` (`{hist_q1['blocks']['c'] - hist_q0['blocks']['c']:+.6f}`) | Q2 = `{hist_q2['blocks']['c']:.6f}` (`{hist_q2['blocks']['c'] - hist_q0['blocks']['c']:+.6f}`)
+- **Block D**: Q0 = `{hist_q0['blocks']['d']:.6f}` | Q1 = `{hist_q1['blocks']['d']:.6f}` (`{hist_q1['blocks']['d'] - hist_q0['blocks']['d']:+.6f}`) | Q2 = `{hist_q2['blocks']['d']:.6f}` (`{hist_q2['blocks']['d'] - hist_q0['blocks']['d']:+.6f}`)
 
 ---
 
