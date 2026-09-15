@@ -28,7 +28,19 @@ from run_burst_expanded_fusion_submission import DocumentStore
 REPO_JINA = "models/jina-reranker-v2-base-multilingual"
 
 
+def patch_transformers_v5() -> None:
+    import transformers.models.xlm_roberta.modeling_xlm_roberta as module
+    if hasattr(module, "create_position_ids_from_input_ids"):
+        return
+    def helper(input_ids, padding_idx, past_key_values_length=0):
+        mask = input_ids.ne(padding_idx).int()
+        positions = (torch.cumsum(mask, dim=1) + past_key_values_length) * mask
+        return positions.long() + padding_idx
+    module.create_position_ids_from_input_ids = helper
+
+
 def main():
+    patch_transformers_v5()
     ap = argparse.ArgumentParser()
     ap.add_argument("--kind", choices=["bi", "jina"], required=True)
     ap.add_argument("--model-path", default="")

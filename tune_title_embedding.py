@@ -21,14 +21,15 @@ from transformers import AutoModel, AutoTokenizer
 
 from benchmark_aiteamvn_holdouts import encode_cls
 from run_burst_expanded_fusion_submission import DocumentStore
-from tune_corpus_dense_fusion import build_training
+from tune_corpus_cap32_fusion import build_training_cap
 from tune_doctype_features import build_type_table, type_features
 from tune_title_features import lobo, title_table
 
 
 def main():
     root = Path(__file__).resolve().parent
-    queries, blocks, all_ids, extended, local, scores = build_training(root, depth=20)
+    queries, blocks, all_ids, extended, local, scores = build_training_cap(
+        root, 32, "results/corpus_index/holdout_extended_scores_cap32.pkl", depth=20)
     names = ["base", "expanded", "jina", "dense", "corpus"]
 
     docs = DocumentStore(sorted(

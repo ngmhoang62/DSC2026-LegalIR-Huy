@@ -86,7 +86,7 @@ def score_vnlegal(root, output, public, public_ids, candidates, documents, devic
                     passages.append(p)
             ds = dict(saved.get(q, {}))
             if passages:
-                pvec = encode_cls(model, tokenizer, passages, 32, 512)
+                pvec = encode_cls(model, tokenizer, passages, 64, 512)
                 for d, s in zip(owners, pvec @ qvec):
                     ds[d] = max(ds.get(d, -1e9), float(s))
             saved[q] = ds
