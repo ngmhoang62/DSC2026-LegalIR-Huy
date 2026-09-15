@@ -251,26 +251,26 @@ Promotion criteria requires ALL five gates to pass:
 | Package | Arm | JSON SHA256 | ZIP SHA256 |
 | :--- | :---: | :--- | :--- |
 | **`CONTROL_H0.zip`** | E0 | `2910870e33e1d45e020b63a91ee63bbc322a56ee046d3477f950917947b8e8e5` | `125711ef275be1e9293961a96d2e3760d012ce6024b78b492722fa56374cc9ec` |
-| **`CANDIDATE_E1_REPLACE_E5.zip`** | E1 | `77d3419356d252445100fa110757d472251a31d45d947192cfc9a44458316b0b` | `291d19a3849af08aa4bd7b6dc97177c7f68386886effa8568a0b6ab30219820b` |
-| **`CANDIDATE_E2_AUGMENT_SCORE.zip`** | E2 | `f3ee18fa0bbdb0374e2d26f6345fc5e3532ceb16ebddcfdfba22556555cc6985` | `c9f0b5aed9a9ca79f0ae35f3b94614dcb8cd3d50ae34bb7d8d1fcef7207fcd42` |
-| **`CANDIDATE_E3_AUGMENT_SCORE_RANK.zip`** | E3 | `20fdf94f71a476ce1e9d1bf77c0fe4c4b693246ebc6dc32f3be0ec0ebc6488d0` | `108579feba2fb124d5f0d55a804b021481f7aea018720f29a7f7c3f952ef6390` |
+| **`CANDIDATE_E1_REPLACE_E5.zip`** | E1 | `7834c94e85f3700bf3f01629ec49a292b2bb10164c3169ee9542a87cb94b6844` | `291d19a3849af08aa4bd7b6dc97177c7f68386886effa8568a0b6ab30219820b` |
+| **`CANDIDATE_E2_AUGMENT_SCORE.zip`** | E2 | `05223f9ce723ed62d1c11d86c0c12734a2e9cbdb85bc8aa29154da8fd392eff8` | `c9f0b5aed9a9ca79f0ae35f3b94614dcb8cd3d50ae34bb7d8d1fcef7207fcd42` |
+| **`CANDIDATE_E3_AUGMENT_SCORE_RANK.zip`** | E3 | `89353eb1abcb08c62af341715bbdb958b46b8552e1646c16e679715de613398a` | `108579feba2fb124d5f0d55a804b021481f7aea018720f29a7f7c3f952ef6390` |
 
 ### Public Churn vs H0 (1,000 Queries):
 - **E1 (Replace generic E5)**:
   - Changed Top-5 Set: **435 / 1000 (43.5%)**
   - Changed Order: **705 / 1000 (70.5%)**
   - Mean Top-5 Jaccard: **0.8437**
-  - Boundary Changes (Rank 5): **412 queries**
+  - Boundary Changes (Rank 5): **547 queries**
 - **E2 (Augment score only)**:
   - Changed Top-5 Set: **402 / 1000 (40.2%)**
   - Changed Order: **683 / 1000 (68.3%)**
   - Mean Top-5 Jaccard: **0.8570**
-  - Boundary Changes (Rank 5): **380 queries**
+  - Boundary Changes (Rank 5): **522 queries**
 - **E3 (Augment score + rank)**:
   - Changed Top-5 Set: **456 / 1000 (45.6%)**
   - Changed Order: **763 / 1000 (76.3%)**
   - Mean Top-5 Jaccard: **0.8371**
-  - Boundary Changes (Rank 5): **431 queries**
+  - Boundary Changes (Rank 5): **573 queries**
 """
 
     with open(decision_path, "w", encoding="utf-8") as f:
