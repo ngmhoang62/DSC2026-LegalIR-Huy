@@ -39,6 +39,10 @@ def main():
     print("STARTING FULL PIPELINE: HUY_QUERY_BALANCED_PAIRWISE_LTR_V1")
     print("================================================================================")
 
+    trace_file = RESULTS_DIR / "EXECUTION_TRACE.jsonl"
+    if trace_file.exists():
+        trace_file.unlink()
+
     # Step 0: Unit Test
     t0 = time.perf_counter()
     print("\n--- STEP 0: Pairwise Utility Unit Test ---")
