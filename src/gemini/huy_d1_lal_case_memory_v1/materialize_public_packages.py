@@ -446,7 +446,7 @@ def run_public_materialization() -> Dict[str, Any]:
     # 3. Public Memory Features
     print("Encoding public questions with FrozenLALQueryEncoder...", flush=True)
     encoder = FrozenLALQueryEncoder(MODEL_PATH)
-    pub_questions = [public_meta[q]["question"] for q in public_ids]
+    pub_questions = [public_meta[q] for q in public_ids]
     pub_vectors = encoder.encode(pub_questions)
 
     # Support pool for public is all 6,991 V2 queries
