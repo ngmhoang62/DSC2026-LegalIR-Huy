@@ -210,9 +210,10 @@ def generate_forensics():
         coef_bytes = model.coef_.tobytes()
         coef_hash = hashlib.sha256(coef_bytes).hexdigest()
 
-        lobo_models[held] = model
-        lobo_scalers[held] = scaler
-        lobo_coef_hashes[held] = coef_hash
+        block_key = held.upper()
+        lobo_models[block_key] = model
+        lobo_scalers[block_key] = scaler
+        lobo_coef_hashes[block_key] = coef_hash
 
         b_recalls = []
         for q in test_ids:
@@ -231,7 +232,7 @@ def generate_forensics():
 
             b_recalls.append(len(set(top5) & gold[q]) / max(1, len(gold[q])))
 
-        block_recalls_computed[held] = float(np.mean(b_recalls))
+        block_recalls_computed[block_key] = float(np.mean(b_recalls))
 
     pooled_r5 = float(
         np.mean([len(set(d1_preds[q]) & gold[q]) / max(1, len(gold[q])) for q in all_ids])
@@ -250,7 +251,7 @@ def generate_forensics():
     qid_to_block = {}
     for b, qlist in blocks.items():
         for q in qlist:
-            qid_to_block[q] = b
+            qid_to_block[q] = b.upper()
 
     # Identify imperfect queries (Recall@5 < 1.0)
     imperfect_qids = []
