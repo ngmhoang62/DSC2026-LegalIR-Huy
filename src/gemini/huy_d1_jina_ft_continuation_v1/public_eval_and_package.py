@@ -381,8 +381,8 @@ def run_public_work() -> dict:
             sentence_pairs = [(text, p) for p in passages]
             raw_scores = []
             with torch.no_grad():
-                for b_start in range(0, len(sentence_pairs), 32):
-                    b_chunk = sentence_pairs[b_start : b_start + 32]
+                for b_start in range(0, len(sentence_pairs), 16):
+                    b_chunk = sentence_pairs[b_start : b_start + 16]
                     inputs = tok(
                         [c[0] for c in b_chunk],
                         [c[1] for c in b_chunk],

@@ -60,7 +60,7 @@ def run_parity(n_queries: int = 64) -> dict:
                 passages.append(p)
 
         raw = model.compute_score(
-            [(text, p) for p in passages], batch_size=32, max_length=512
+            [(text, p) for p in passages], batch_size=16, max_length=512
         )
         if isinstance(raw, float):
             raw = [raw]

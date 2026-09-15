@@ -23,7 +23,7 @@ ADAPTER_DIR = RES_DIR / "jina_ft_continued_adapter"
 OUT_CV_PKL = RES_DIR / "jina_ft_continued_cv.pkl"
 
 
-def run_scoring(batch_size: int = 32) -> dict:
+def run_scoring(batch_size: int = 16) -> dict:
     common.seed_everything(2026)
     print("Loading documents and CAL600 pool...", flush=True)
     docs = DocumentStore(
@@ -38,13 +38,7 @@ def run_scoring(batch_size: int = 32) -> dict:
         ROOT, 32, "results/corpus_index/holdout_extended_scores_cap32.pkl", depth=20
     )
 
-    # Read calibrated inference batch size if available
-    proj_path = RES_DIR / "RUNTIME_PROJECTION.json"
-    if proj_path.exists():
-        with open(proj_path, "r") as f:
-            proj = json.load(f)
-        batch_size = proj.get("chosen_inference_batch_size", batch_size)
-
+    batch_size = 16
     print(f"Loading adapted Jina model from {ADAPTER_DIR} (infer_bs={batch_size})...", flush=True)
     base_model, tok = common.load_jina_base_with_shipped_weights()
     model = PeftModel.from_pretrained(base_model, ADAPTER_DIR)
