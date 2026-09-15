@@ -351,12 +351,18 @@ def main() -> Dict[str, Any]:
 
     # 2. DEPLOYMENT_CAL LOBO
     print("\n--- Running DEPLOYMENT_CAL Protocol ---", flush=True)
+    dep_local_views = dict(local_views)
+    dep_local_views["vnlegal_lal"] = {
+        q: sorted(extended[q], key=lambda d: (-vnlegal_cv.get(q, {}).get(d, -1e9), d))
+        for q in all_ids
+    }
+
     dep_q0 = run_lobo_eval(
         "DEPLOYMENT_CAL",
         "Q0_POINTWISE",
         DEPLOYMENT_VIEWS,
         extended,
-        local_views,
+        dep_local_views,
         full_channels_cv,
         type_rows,
         cite_rows,
@@ -373,7 +379,7 @@ def main() -> Dict[str, Any]:
         "Q1_PAIRWISE",
         DEPLOYMENT_VIEWS,
         extended,
-        local_views,
+        dep_local_views,
         full_channels_cv,
         type_rows,
         cite_rows,
@@ -389,7 +395,7 @@ def main() -> Dict[str, Any]:
         "Q2_PAIRWISE_PLUS_PROFILE",
         DEPLOYMENT_VIEWS,
         extended,
-        local_views,
+        dep_local_views,
         full_channels_cv,
         type_rows,
         cite_rows,
