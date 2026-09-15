@@ -70,9 +70,12 @@ def check_promotion_gates(
     paired = cal_report["paired_counts"]
     std_delta = standalone_report["delta_standalone"]
 
+    def get_blk(d_map, b_name):
+        return d_map.get(b_name, d_map.get(b_name.lower(), d_map.get(b_name.upper(), 0.0)))
+
     gate_A = j1["recall_at_5"] > j0["recall_at_5"]
-    gate_B = j1["block_recalls"]["D"] >= j0["block_recalls"]["D"] - 1e-9
-    gate_C = all(delta["block_deltas"][b] >= -0.001 - 1e-9 for b in ["A", "B", "C", "D"])
+    gate_B = get_blk(j1["block_recalls"], "D") >= get_blk(j0["block_recalls"], "D") - 1e-9
+    gate_C = all(get_blk(delta["block_deltas"], b) >= -0.001 - 1e-9 for b in ["A", "B", "C", "D"])
     gate_D = paired["wins"] > paired["losses"]
     gate_E = delta["single_gold_recall_at_5"] >= -0.001 - 1e-9
     gate_F = delta["multi_gold_recall_at_5"] >= -0.003 - 1e-9
@@ -99,7 +102,7 @@ def check_promotion_gates(
 
     gates_status = {
         "Gate_A_pooled_r5_superior": {"passed": gate_A, "j0": j0["recall_at_5"], "j1": j1["recall_at_5"]},
-        "Gate_B_block_D_no_regression": {"passed": gate_B, "j0_D": j0["block_recalls"]["D"], "j1_D": j1["block_recalls"]["D"]},
+        "Gate_B_block_D_no_regression": {"passed": gate_B, "j0_D": get_blk(j0["block_recalls"], "D"), "j1_D": get_blk(j1["block_recalls"], "D")},
         "Gate_C_no_block_regresses_over_001": {"passed": gate_C, "block_deltas": delta["block_deltas"]},
         "Gate_D_wins_greater_than_losses": {"passed": gate_D, "wins": paired["wins"], "losses": paired["losses"]},
         "Gate_E_single_gold_delta_ge_neg_001": {"passed": gate_E, "delta": delta["single_gold_recall_at_5"]},
@@ -128,6 +131,9 @@ def write_decision_markdown(
     delta = cal_report["delta"]
     paired = cal_report["paired_counts"]
 
+    def get_blk(d_map, b_name):
+        return d_map.get(b_name, d_map.get(b_name.lower(), d_map.get(b_name.upper(), 0.0)))
+
     md = f"""# Decision: {verdict}
 
 ## Experiment Identity
@@ -145,10 +151,10 @@ def write_decision_markdown(
 | :--- | :--- | :--- | :--- | :--- |
 | **Pooled Recall@5** | **{j0['recall_at_5']:.16f}** | **{j1['recall_at_5']:.16f}** | **{delta['recall_at_5']:+.16f}** | {'IMPROVED' if delta['recall_at_5'] > 0 else 'REGRESSED' if delta['recall_at_5'] < 0 else 'TIED'} |
 | Precision@5 | {j0['precision_at_5']:.6f} | {j1['precision_at_5']:.6f} | {delta['precision_at_5']:+.6f} | |
-| Block A Recall@5 | {j0['block_recalls']['A']:.6f} | {j1['block_recalls']['A']:.6f} | {delta['block_deltas']['A']:+.6f} | |
-| Block B Recall@5 | {j0['block_recalls']['B']:.6f} | {j1['block_recalls']['B']:.6f} | {delta['block_deltas']['B']:+.6f} | |
-| Block C Recall@5 | {j0['block_recalls']['C']:.6f} | {j1['block_recalls']['C']:.6f} | {delta['block_deltas']['C']:+.6f} | |
-| Block D Recall@5 | {j0['block_recalls']['D']:.6f} | {j1['block_recalls']['D']:.6f} | {delta['block_deltas']['D']:+.6f} | |
+| Block A Recall@5 | {get_blk(j0['block_recalls'], 'A'):.6f} | {get_blk(j1['block_recalls'], 'A'):.6f} | {get_blk(delta['block_deltas'], 'A'):+.6f} | |
+| Block B Recall@5 | {get_blk(j0['block_recalls'], 'B'):.6f} | {get_blk(j1['block_recalls'], 'B'):.6f} | {get_blk(delta['block_deltas'], 'B'):+.6f} | |
+| Block C Recall@5 | {get_blk(j0['block_recalls'], 'C'):.6f} | {get_blk(j1['block_recalls'], 'C'):.6f} | {get_blk(delta['block_deltas'], 'C'):+.6f} | |
+| Block D Recall@5 | {get_blk(j0['block_recalls'], 'D'):.6f} | {get_blk(j1['block_recalls'], 'D'):.6f} | {get_blk(delta['block_deltas'], 'D'):+.6f} | |
 | Single-gold Recall@5 | {j0['single_gold_recall_at_5']:.6f} | {j1['single_gold_recall_at_5']:.6f} | {delta['single_gold_recall_at_5']:+.6f} | |
 | Multi-gold Recall@5 | {j0['multi_gold_recall_at_5']:.6f} | {j1['multi_gold_recall_at_5']:.6f} | {delta['multi_gold_recall_at_5']:+.6f} | |
 | Wins / Losses / Ties | - | - | {paired['wins']} / {paired['losses']} / {paired['ties']} | |
