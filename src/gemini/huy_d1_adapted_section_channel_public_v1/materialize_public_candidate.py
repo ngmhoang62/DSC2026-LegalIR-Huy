@@ -273,8 +273,7 @@ def run_public_stage() -> Dict[str, Any]:
     )
 
     # 4. Step 6a: Public D1 Control Parity Check vs Current D1 Submission
-    print("
---- Running Step 6a: Public D1 Control Parity Check ---", flush=True)
+    print("\n--- Running Step 6a: Public D1 Control Parity Check ---", flush=True)
     d1_views_cal = dict(local_views)
     d1_rows_cal_base, d1_groups = ltr_features(
         d1_views_cal, D1_VIEWS, extended, all_ids, full_channels_cv
@@ -348,8 +347,7 @@ def run_public_stage() -> Dict[str, Any]:
         )
 
     # 5. Step 6b: Score adapted Section CE probability on Public Candidates
-    print("
---- Running Step 6b: Scoring Adapted Section CE on Public Candidates ---", flush=True)
+    print("\n--- Running Step 6b: Scoring Adapted Section CE on Public Candidates ---", flush=True)
     total_public_cand_pairs = sum(len(public_candidates[q]) for q in public_ids)
     print(f"Public candidate pool: {total_public_cand_pairs} candidate pairs across 1000 queries.", flush=True)
 
@@ -448,8 +446,7 @@ def run_public_stage() -> Dict[str, Any]:
         print(f"Saved {PUB_ADAPTED_CACHE_PATH}", flush=True)
 
     # 6. Step 6c: Train A2 on all CAL600 and Predict on Public
-    print("
---- Running Step 6c: Fitting A2 Model on CAL600 and Predicting Public ---", flush=True)
+    print("\n--- Running Step 6c: Fitting A2 Model on CAL600 and Predicting Public ---", flush=True)
     # Load CAL adapted cache
     cached_cal_adapted = pickle.loads(CAL_ADAPTED_CACHE_PATH.read_bytes())
     cal_adapted_scores = cached_cal_adapted["scores"]
@@ -519,8 +516,7 @@ def run_public_stage() -> Dict[str, Any]:
         preds_a2[q] = {"answer": [d for d in fused if d in valid_docs][:5]}
 
     # 7. Step 6d: Materialize and Validate Submission ZIP
-    print("
---- Running Step 6d: Materializing Submission Candidate ZIP ---", flush=True)
+    print("\n--- Running Step 6d: Materializing Submission Candidate ZIP ---", flush=True)
     cand_json_path = RESULTS_DIR / "CANDIDATE_D1_ADAPTED_SECTION_CHANNEL.json"
     cand_zip_path = RESULTS_DIR / "CANDIDATE_D1_ADAPTED_SECTION_CHANNEL.zip"
 
@@ -548,8 +544,7 @@ def run_public_stage() -> Dict[str, Any]:
         if c_ans[4] != a2_ans[4]:
             rank5_changes += 1
 
-    print(f"
---- Public Churn vs Current D1 Submission ---")
+    print("\n--- Public Churn vs Current D1 Submission ---")
     print(f"Top-5 Set Churn:     {set_churn} / 1000 ({set_churn / 10.0:.2f}%)")
     print(f"Top-5 Ordered Churn: {ord_churn} / 1000 ({ord_churn / 10.0:.2f}%)")
     print(f"Rank-5 Boundary Changes: {rank5_changes} / 1000 ({rank5_changes / 10.0:.2f}%)")

@@ -27,8 +27,7 @@ def main():
     print("================================================================================", flush=True)
 
     # Stage 0: Git Hard Gate
-    print("
---- STAGE 0: GIT HARD GATE ---", flush=True)
+    print("\n--- STAGE 0: GIT HARD GATE ---", flush=True)
     git_info = get_git_status()
     print(f"Head commit:        {git_info.get('head_commit')}", flush=True)
     print(f"Origin/main commit: {git_info.get('origin_main_commit')}", flush=True)
@@ -66,8 +65,7 @@ def main():
     print(f"Stage 6 completed with status: {public_manifest.get('status', 'EXECUTED')}", flush=True)
 
     t_total = time.perf_counter() - t_start
-    print("
-================================================================================", flush=True)
+    print("\n================================================================================", flush=True)
     print(f"PIPELINE COMPLETED SUCCESSFULLY in {t_total:.1f}s ({t_total/60.0:.2f} min)", flush=True)
     print(f"Final Local Verdict: {verdict}", flush=True)
     print("================================================================================", flush=True)

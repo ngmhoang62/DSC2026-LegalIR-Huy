@@ -225,24 +225,21 @@ def evaluate_local_three_arms() -> Tuple[Dict[str, Any], str]:
     channels_a2 = {**full_channels_cv, "legal_section_ce": aligned_adapted}
 
     # 5. Evaluate A0
-    print("
---- Evaluating Arm A0: D1 Baseline (48D) ---", flush=True)
+    print("\n--- Evaluating Arm A0: D1 Baseline (48D) ---", flush=True)
     preds_a0, dim_a0, metrics_a0, scores_a0, ranks_a0, full_sc_a0 = evaluate_arm(
         "A0_D1_BASELINE", channels_a0, local_views, extended, type_rows, cite_rows, blocks, all_ids, gold
     )
     print(f"A0 Recall@5: {metrics_a0['recall_at_5']:.6f} (Dim: {dim_a0})")
 
     # 6. Evaluate A1
-    print("
---- Evaluating Arm A1: D1 + Frozen Section CE Control (50D) ---", flush=True)
+    print("\n--- Evaluating Arm A1: D1 + Frozen Section CE Control (50D) ---", flush=True)
     preds_a1, dim_a1, metrics_a1, scores_a1, ranks_a1, full_sc_a1 = evaluate_arm(
         "A1_D1_PLUS_FROZEN_SECTION_CE", channels_a1, local_views, extended, type_rows, cite_rows, blocks, all_ids, gold
     )
     print(f"A1 Recall@5: {metrics_a1['recall_at_5']:.6f} (Dim: {dim_a1})")
 
     # 7. Evaluate A2
-    print("
---- Evaluating Arm A2: D1 + Adapted Section CE Probability (50D) ---", flush=True)
+    print("\n--- Evaluating Arm A2: D1 + Adapted Section CE Probability (50D) ---", flush=True)
     preds_a2, dim_a2, metrics_a2, scores_a2, ranks_a2, full_sc_a2 = evaluate_arm(
         "A2_D1_PLUS_ADAPTED_SECTION_CE", channels_a2, local_views, extended, type_rows, cite_rows, blocks, all_ids, gold
     )
@@ -299,12 +296,10 @@ def evaluate_local_three_arms() -> Tuple[Dict[str, Any], str]:
             verdict = "PUBLIC_CANDIDATE_ADAPTED_SECTION_CHANNEL"
             rationale = f"A2 >= A1 + 0.0005 (gain: {delta_r5_a2_a1:+.6f}) and passed all safety gates."
 
-    print(f"
-=======================================================", flush=True)
+    print("\n=======================================================", flush=True)
     print(f"LOCAL SCIENTIFIC VERDICT: {verdict}", flush=True)
     print(f"RATIONALE: {rationale}", flush=True)
-    print(f"=======================================================
-", flush=True)
+    print("=======================================================\n", flush=True)
 
     # 10. Post-hoc Rank Diagnostics for Changed Recall Queries
     diagnostics: List[Dict[str, Any]] = []
