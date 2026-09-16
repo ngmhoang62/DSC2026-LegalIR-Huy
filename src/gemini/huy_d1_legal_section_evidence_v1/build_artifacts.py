@@ -2,42 +2,30 @@
 
 from __future__ import annotations
 
+import datetime
 import json
+import pickle
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 ROOT = Path("D:/Study/DSC2026/sota")
 RES_DIR = ROOT / "results/gemini/huy_d1_legal_section_evidence_v1"
 SRC_DIR = ROOT / "src/gemini/huy_d1_legal_section_evidence_v1"
 
-from src.gemini.huy_d1_legal_section_evidence_v1.common import sha256_file
+from src.gemini.huy_d1_legal_section_evidence_v1.common import (
+    SCORE_CACHE_PKL,
+    compute_candidate_fingerprint,
+    compute_query_fingerprint,
+    get_git_status,
+    sha256_file,
+)
 from src.gemini.huy_d1_legal_section_evidence_v1.legal_section_parser import (
     parse_document_into_sections,
     preselect_legal_sections,
+    score_section_lexical,
 )
-
-
-def get_git_info() -> Dict[str, Any]:
-    try:
-        head = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True
-        ).strip()
-        origin = subprocess.check_output(
-            ["git", "rev-parse", "origin/main"], cwd=str(ROOT), text=True
-        ).strip()
-        status = subprocess.check_output(
-            ["git", "status", "--porcelain"], cwd=str(ROOT), text=True
-        ).strip()
-        return {
-            "head_commit": head,
-            "origin_main_commit": origin,
-            "parity": head == origin,
-            "status_clean": len(status) == 0,
-        }
-    except Exception as e:
-        return {"error": str(e), "parity": False}
 
 
 def build_all_artifacts(
@@ -49,9 +37,14 @@ def build_all_artifacts(
     model_provenance: dict,
     scoring_meta: dict,
     cal_data: tuple,
+    full_rankings_s0: Optional[Dict[str, List[str]]] = None,
+    full_rankings_s1: Optional[Dict[str, List[str]]] = None,
+    full_scores_s0: Optional[Dict[str, Dict[str, float]]] = None,
+    full_scores_s1: Optional[Dict[str, Dict[str, float]]] = None,
+    eval_completed_time: Optional[str] = None,
 ) -> dict:
     RES_DIR.mkdir(parents=True, exist_ok=True)
-    git_info = get_git_info()
+    git_info = get_git_status()
     print("=== BUILDING AUTHORITATIVE ARTIFACTS ===", flush=True)
 
     (
@@ -75,7 +68,26 @@ def build_all_artifacts(
             "size_bytes": p.stat().st_size,
         }
 
-    # 2. Write S0_S1_CAL_PREDICTIONS.jsonl
+    # 2. Load score cache details
+    saved_scores: Dict[str, Dict[str, float]] = {}
+    saved_section_details: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    cache_manifest: Dict[str, Any] = {}
+    cache_sha256 = "MISSING"
+
+    if SCORE_CACHE_PKL.exists():
+        cache_sha256 = sha256_file(SCORE_CACHE_PKL)
+        try:
+            cached_obj = pickle.loads(SCORE_CACHE_PKL.read_bytes())
+            if isinstance(cached_obj, dict):
+                saved_scores = cached_obj.get("scores", {})
+                saved_section_details = cached_obj.get("section_details", {})
+                cache_manifest = cached_obj.get("manifest", {})
+            else:
+                saved_scores = cached_obj
+        except Exception as e:
+            print(f"Warning: could not parse cached details: {e}", flush=True)
+
+    # 3. Write S0_S1_CAL_PREDICTIONS.jsonl
     pred_path = RES_DIR / "S0_S1_CAL_PREDICTIONS.jsonl"
     with open(pred_path, "w", encoding="utf-8") as f:
         for q in all_ids:
@@ -98,56 +110,88 @@ def build_all_artifacts(
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     print(f"Wrote {pred_path}", flush=True)
 
-    # 3. Build SECTION_EVIDENCE_DIAGNOSTICS.json
+    # 4. Build SECTION_EVIDENCE_DIAGNOSTICS.json
     diag_path = RES_DIR / "SECTION_EVIDENCE_DIAGNOSTICS.json"
     changed_qids = eval_report.get("changed_queries", [])
     changed_diagnostics = []
+
+    # Identify block for each query
+    q_to_block = {}
+    for b_name, b_qids in blocks.items():
+        for b_qid in b_qids:
+            q_to_block[b_qid] = b_name
 
     for q in changed_qids:
         q_text = queries[q][0]
         q_gold = set(gold[q])
         cand_list = extended[q]
-        s0_ranks = {d: r + 1 for r, d in enumerate(preds_s0[q])}
-        s1_ranks = {d: r + 1 for r, d in enumerate(preds_s1[q])}
 
-        # Candidate pool ranking
+        ranking_s0 = full_rankings_s0[q] if full_rankings_s0 and q in full_rankings_s0 else preds_s0[q]
+        ranking_s1 = full_rankings_s1[q] if full_rankings_s1 and q in full_rankings_s1 else preds_s1[q]
+
+        scores_map_s0 = full_scores_s0[q] if full_scores_s0 and q in full_scores_s0 else {}
+        scores_map_s1 = full_scores_s1[q] if full_scores_s1 and q in full_scores_s1 else {}
+
         doc_details = []
         for d in cand_list:
-            d_text = docs[d]
-            sections = parse_document_into_sections(d, d_text)
-            selected_secs = preselect_legal_sections(q_text, sections, count=2)
+            r0 = ranking_s0.index(d) + 1 if d in ranking_s0 else None
+            r1 = ranking_s1.index(d) + 1 if d in ranking_s1 else None
+            sc0 = scores_map_s0.get(d)
+            sc1 = scores_map_s1.get(d)
+            sec_ce_sc = saved_scores.get(q, {}).get(d)
 
-            in_s0_top5 = d in preds_s0[q]
-            in_s1_top5 = d in preds_s1[q]
+            # Selected sections with individual scores
+            d_sec_details = saved_section_details.get(q, {}).get(d)
+            if not d_sec_details:
+                # Fallback extraction if not recorded in cache
+                sections = parse_document_into_sections(d, docs[d])
+                selected_secs = preselect_legal_sections(q_text, sections, count=2)
+                d_sec_details = [
+                    {
+                        "section_index": s.section_index,
+                        "section_type": s.section_type,
+                        "heading": s.heading,
+                        "excerpt": s.text[:250] + "..." if len(s.text) > 250 else s.text,
+                        "lexical_score": score_section_lexical(q_text, s),
+                        "raw_ce_score": None,
+                    }
+                    for s in selected_secs
+                ]
 
-            if in_s0_top5 != in_s1_top5 or d in q_gold:
-                doc_details.append({
-                    "doc_id": d,
-                    "is_gold": d in q_gold,
-                    "s0_top5_rank": s0_ranks.get(d),
-                    "s1_top5_rank": s1_ranks.get(d),
-                    "selected_sections": [
-                        {
-                            "heading": s.heading,
-                            "section_type": s.section_type,
-                            "excerpt": s.text[:250] + "..." if len(s.text) > 250 else s.text,
-                        }
-                        for s in selected_secs
-                    ],
-                })
+            doc_details.append({
+                "doc_id": d,
+                "is_gold": d in q_gold,
+                "s0_final_rank": r0,
+                "s1_final_rank": r1,
+                "rank_delta": (r0 - r1) if (r0 is not None and r1 is not None) else None,
+                "s0_decision_score": sc0,
+                "s1_decision_score": sc1,
+                "aggregated_legal_section_ce_score": sec_ce_sc,
+                "selected_sections": d_sec_details,
+            })
+
+        # Sort documents by best rank between S0 and S1
+        doc_details.sort(
+            key=lambda item: min(item["s0_final_rank"] or 9999, item["s1_final_rank"] or 9999)
+        )
 
         changed_diagnostics.append({
             "qid": q,
+            "block": q_to_block.get(q, "UNKNOWN"),
             "question": q_text,
             "gold_doc_ids": sorted(list(q_gold)),
             "s0_top5": preds_s0[q],
             "s1_top5": preds_s1[q],
             "s0_recall_at_5": len(set(preds_s0[q]) & q_gold) / max(1, len(q_gold)),
             "s1_recall_at_5": len(set(preds_s1[q]) & q_gold) / max(1, len(q_gold)),
-            "affected_documents": doc_details,
+            "candidate_pool_size": len(cand_list),
+            "s0_candidate_ranking": ranking_s0,
+            "s1_candidate_ranking": ranking_s1,
+            "candidate_documents": doc_details,
         })
 
-    # Post-hoc audit against prior 33 CAL error queries
+    # Post-hoc audit against prior CAL error queries (ONLY AFTER GLOBAL EVALUATION)
+    posthoc_accessed_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
     prior_forensics_path = ROOT / "results/gemini/d1_error_forensics/D1_ERROR_FORENSICS.json"
     posthoc_analysis = {}
     if prior_forensics_path.exists():
@@ -183,7 +227,7 @@ def build_all_artifacts(
         }
 
     diag_payload = {
-        "schema_version": "dsc2026.gemini.huy_d1_legal_section_evidence_v1.diagnostics.v1",
+        "schema_version": "dsc2026.gemini.huy_d1_legal_section_evidence_v1.diagnostics.v2",
         "experiment_id": "HUY_D1_LEGAL_SECTION_EVIDENCE_V1",
         "total_changed_queries": len(changed_diagnostics),
         "posthoc_cal_error_analysis": posthoc_analysis,
@@ -193,16 +237,47 @@ def build_all_artifacts(
         json.dump(diag_payload, f, indent=2, ensure_ascii=False)
     print(f"Wrote {diag_path}", flush=True)
 
-    # 4. Authoritative report JSON
+    # 5. Build FINAL_RUN_PROVENANCE.json
+    prov_path = RES_DIR / "FINAL_RUN_PROVENANCE.json"
+    provenance_payload = {
+        "schema_version": "dsc2026.gemini.huy_d1_legal_section_evidence_v1.provenance.v1",
+        "experiment_id": "HUY_D1_LEGAL_SECTION_EVIDENCE_V1",
+        "pushed_commit_sha": git_info.get("head_commit"),
+        "origin_main_commit_sha": git_info.get("origin_main_commit"),
+        "head_origin_parity": git_info.get("parity"),
+        "working_tree_clean_before_final_run": git_info.get("status_clean"),
+        "source_file_hashes": source_files_meta,
+        "model_provenance": model_provenance,
+        "candidate_pool_fingerprint": compute_candidate_fingerprint(all_ids, extended),
+        "query_population_fingerprint": compute_query_fingerprint(all_ids, queries),
+        "score_cache_path": str(SCORE_CACHE_PKL).replace("\\", "/"),
+        "score_cache_sha256": cache_sha256,
+        "score_cache_manifest": cache_manifest,
+        "fresh_final_run": scoring_meta.get("fresh_final_run", True),
+        "scoring_start_time": scoring_meta.get("scoring_start_time"),
+        "scoring_end_time": scoring_meta.get("scoring_end_time"),
+        "newly_scored_queries": scoring_meta.get("newly_scored_queries"),
+        "reused_queries": scoring_meta.get("reused_queries"),
+        "eval_completed_timestamp": eval_completed_time,
+        "posthoc_forensics_accessed_timestamp": posthoc_accessed_time,
+        "d1_error_forensics_access_after_eval_only": True,
+        "d1_error_forensics_accessed_before_eval": False,
+    }
+    with open(prov_path, "w", encoding="utf-8") as f:
+        json.dump(provenance_payload, f, indent=2, ensure_ascii=False)
+    print(f"Wrote {prov_path}", flush=True)
+
+    # 6. Authoritative report JSON
     report_path = RES_DIR / "HUY_D1_LEGAL_SECTION_EVIDENCE_V1_REPORT.json"
     authoritative_report = {
-        "schema_version": "dsc2026.gemini.huy_d1_legal_section_evidence_v1.report.v1",
+        "schema_version": "dsc2026.gemini.huy_d1_legal_section_evidence_v1.report.v2",
         "experiment_id": "HUY_D1_LEGAL_SECTION_EVIDENCE_V1",
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "verdict": eval_report["verdict"],
         "git": git_info,
         "model_provenance": model_provenance,
         "scoring_metadata": scoring_meta,
+        "score_cache_sha256": cache_sha256,
         "source_files": source_files_meta,
         "s0_baseline": eval_report["s0_baseline"],
         "s1_section_evidence": eval_report["s1_section_evidence"],
@@ -219,7 +294,7 @@ def build_all_artifacts(
         json.dump(authoritative_report, f, indent=2, ensure_ascii=False)
     print(f"Wrote {report_path}", flush=True)
 
-    # 5. Generate DECISION.md
+    # 7. Generate DECISION.md
     dec_path = RES_DIR / "DECISION.md"
     verdict = eval_report["verdict"]
     s0 = eval_report["s0_baseline"]
@@ -236,6 +311,8 @@ def build_all_artifacts(
 - **Pushed Source Commit**: `{git_info.get('head_commit')}`
 - **Origin/Main Commit**: `{git_info.get('origin_main_commit')}`
 - **Origin Parity**: `{git_info.get('parity')}` (Working tree clean: `{git_info.get('status_clean')}`)
+- **Score Cache Provenance**: `fresh_final_run={scoring_meta.get('fresh_final_run')}`, `newly_scored_queries={scoring_meta.get('newly_scored_queries')}`, `reused_queries={scoring_meta.get('reused_queries')}`
+- **Score Cache SHA256**: `{cache_sha256}`
 - **Core Hypothesis**: Scoring structured legal sections (Chương, Mục, Điều, Phụ lục) with frozen Jina cross-encoder provides answer-bearing evidence that improves D1 Top-5 fusion without modifying candidate pool or rank views.
 
 ---

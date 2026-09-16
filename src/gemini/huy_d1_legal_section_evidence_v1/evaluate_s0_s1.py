@@ -36,9 +36,18 @@ def run_lobo_pipeline(
     blocks: Dict[str, List[str]],
     all_ids: List[str],
     gold: Dict[str, Set[str]],
-) -> Tuple[Dict[str, List[str]], int, Dict[str, Any], Dict[str, np.ndarray]]:
+) -> Tuple[
+    Dict[str, List[str]],
+    int,
+    Dict[str, Any],
+    Dict[str, np.ndarray],
+    Dict[str, List[str]],
+    Dict[str, Dict[str, float]],
+]:
     preds: Dict[str, List[str]] = {}
     scores_dict: Dict[str, np.ndarray] = {}
+    full_rankings: Dict[str, List[str]] = {}
+    full_scores: Dict[str, Dict[str, float]] = {}
     feature_dim = 0
     block_metrics = {}
 
@@ -79,6 +88,10 @@ def run_lobo_pipeline(
             order = sorted(
                 range(len(dec_scores)), key=lambda i: dec_scores[i], reverse=True
             )
+            full_rankings[q] = [eval_groups[q][i] for i in order]
+            full_scores[q] = {
+                eval_groups[q][i]: float(dec_scores[i]) for i in range(len(dec_scores))
+            }
             top5 = [eval_groups[q][i] for i in order[:5]]
             preds[q] = top5
             scores_dict[q] = dec_scores
@@ -110,10 +123,20 @@ def run_lobo_pipeline(
         "multi_gold_recall_at_5": float(np.mean(multi_gold_recalls)),
         "block_recalls": block_metrics,
     }
-    return preds, feature_dim, metrics, scores_dict
+    return preds, feature_dim, metrics, scores_dict, full_rankings, full_scores
 
 
-def evaluate_both_arms() -> dict:
+def evaluate_both_arms() -> Tuple[
+    dict,
+    Dict[str, List[str]],
+    Dict[str, List[str]],
+    Dict[str, np.ndarray],
+    Dict[str, np.ndarray],
+    Dict[str, List[str]],
+    Dict[str, List[str]],
+    Dict[str, Dict[str, float]],
+    Dict[str, Dict[str, float]],
+]:
     seed_everything(2026)
     print("=== EVALUATING S0 (BASELINE 48D) VS S1 (SECTION EVIDENCE 50D) ===", flush=True)
 
@@ -134,7 +157,12 @@ def evaluate_both_arms() -> dict:
     # 2. Load legal_section_ce cache
     if not SCORE_CACHE_PKL.exists():
         raise FileNotFoundError(f"Score cache not found: {SCORE_CACHE_PKL}")
-    legal_section_ce_cv = pickle.loads(SCORE_CACHE_PKL.read_bytes())
+    cached_obj = pickle.loads(SCORE_CACHE_PKL.read_bytes())
+    if isinstance(cached_obj, dict) and "scores" in cached_obj:
+        legal_section_ce_cv = cached_obj["scores"]
+    else:
+        legal_section_ce_cv = cached_obj
+
     print(f"Loaded legal_section_ce cache for {len(legal_section_ce_cv)} queries.", flush=True)
 
     # Align channel scores with candidate pool
@@ -155,7 +183,7 @@ def evaluate_both_arms() -> dict:
 
     # Evaluate Arm S0
     print("\n--- Running S0 LOBO Evaluation (Baseline 48D) ---", flush=True)
-    preds_s0, dim_s0, metrics_s0, scores_s0 = run_lobo_pipeline(
+    preds_s0, dim_s0, metrics_s0, scores_s0, full_rankings_s0, full_scores_s0 = run_lobo_pipeline(
         "S0_D1_BASELINE",
         channels_s0,
         local_views,
@@ -169,7 +197,7 @@ def evaluate_both_arms() -> dict:
 
     # Evaluate Arm S1
     print("\n--- Running S1 LOBO Evaluation (Section Evidence 50D) ---", flush=True)
-    preds_s1, dim_s1, metrics_s1, scores_s1 = run_lobo_pipeline(
+    preds_s1, dim_s1, metrics_s1, scores_s1, full_rankings_s1, full_scores_s1 = run_lobo_pipeline(
         "S1_D1_LEGAL_SECTION_CE",
         channels_s1,
         local_views,
@@ -279,7 +307,7 @@ def evaluate_both_arms() -> dict:
     print(f"Standalone Section R@5 | -                 | {standalone_metrics['standalone_recall_at_5']:.6f}          | -")
     print("==================================================================")
 
-    # Promotion decision logic per Section 12
+    # Promotion decision logic
     pooled_gain = deltas["recall_at_5"]
     block_d_gain = deltas["block_deltas"]["D"]
     single_gain = deltas["single_gold_recall_at_5"]
@@ -305,9 +333,19 @@ def evaluate_both_arms() -> dict:
         "changed_queries": changed_queries,
     }
 
-    return evaluation_report, preds_s0, preds_s1, scores_s0, scores_s1
+    return (
+        evaluation_report,
+        preds_s0,
+        preds_s1,
+        scores_s0,
+        scores_s1,
+        full_rankings_s0,
+        full_rankings_s1,
+        full_scores_s0,
+        full_scores_s1,
+    )
 
 
 if __name__ == "__main__":
-    report, _, _, _, _ = evaluate_both_arms()
+    res = evaluate_both_arms()
     print("Evaluation completed successfully.")

@@ -8,6 +8,7 @@ import os
 import pickle
 import random
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
@@ -68,6 +69,63 @@ def sha256_file(path: Path) -> str:
     with open(path, "rb") as f:
         while chunk := f.read(65536):
             h.update(chunk)
+    return h.hexdigest()
+
+
+def get_git_commit_sha() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True
+        ).strip()
+    except Exception as e:
+        return f"UNKNOWN_{e}"
+
+
+def get_git_status() -> Dict[str, Any]:
+    try:
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True
+        ).strip()
+        origin = subprocess.check_output(
+            ["git", "rev-parse", "origin/main"], cwd=str(ROOT), text=True
+        ).strip()
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=str(ROOT), text=True
+        ).strip()
+        return {
+            "head_commit": head,
+            "origin_main_commit": origin,
+            "parity": head == origin,
+            "status_clean": len(status) == 0,
+            "porcelain_output": status,
+        }
+    except Exception as e:
+        return {
+            "head_commit": "ERROR",
+            "origin_main_commit": "ERROR",
+            "parity": False,
+            "status_clean": False,
+            "error": str(e),
+        }
+
+
+def compute_candidate_fingerprint(
+    all_ids: List[str], extended: Dict[str, List[str]]
+) -> str:
+    h = hashlib.sha256()
+    for q in sorted(all_ids):
+        h.update(f"{q}:".encode("utf-8"))
+        for d in sorted(extended[q]):
+            h.update(f"{d},".encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def compute_query_fingerprint(all_ids: List[str], queries: Dict[str, Any]) -> str:
+    h = hashlib.sha256()
+    for q in sorted(all_ids):
+        text = queries[q][0]
+        h.update(f"{q}:{text}\n".encode("utf-8"))
     return h.hexdigest()
 
 
