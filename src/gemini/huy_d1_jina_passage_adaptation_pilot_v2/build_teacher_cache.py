@@ -1,4 +1,4 @@
-"""Build and seal teacher scores cache for training pairs."""
+"""Build and seal teacher scores cache for training pairs with full provenance and doc-parsing cache."""
 
 from __future__ import annotations
 
@@ -17,7 +17,11 @@ from .common import (
     RES_DIR,
     ROOT,
     SRC_DIR,
+    V2_CANDIDATE_POOL_JSONL,
+    V2_CONTEXTS_JSONL,
+    V2_QUERIES_JSONL,
     WEIGHTS_JINA_FT,
+    compute_qid_list_fingerprint,
     get_git_status,
     load_jina_base_with_shipped_weights,
     load_v2_contexts,
@@ -25,7 +29,7 @@ from .common import (
     seed_everything,
     sha256_file,
 )
-from .legal_section_parser import parse_document_into_sections, preselect_legal_sections
+from .legal_section_parser import LegalSection, parse_document_into_sections, preselect_legal_sections
 
 TEACHER_PAIRS_FILE = RES_DIR / "TEACHER_TRAINING_PAIRS.jsonl"
 TEACHER_SEAL_FILE = RES_DIR / "TEACHER_SCORE_CACHE_SEAL.json"
@@ -61,91 +65,92 @@ def build_teacher_cache(
     seed_everything(2026)
     git_info = get_git_status()
 
-    # 1. Check if sealed cache already exists and is valid
+    # 1. Load exact split audit and assert split parity
+    split_audit_path = RES_DIR / "SPLIT_AUDIT.json"
+    if not split_audit_path.exists():
+        run_split_audit()
+    split_audit = json.loads(split_audit_path.read_text(encoding="utf-8"))
+
+    sealed_train_qids = split_audit["training_partition"]["train_qids_with_in_pool_gold"]
+    expected_fp = split_audit["training_partition"]["train_qids_with_in_pool_gold_fingerprint"]
+    actual_fp = compute_qid_list_fingerprint(sealed_train_qids)
+
+    if actual_fp != expected_fp:
+        raise RuntimeError(
+            f"BLOCKED_SPLIT_PARITY: train_qids_with_in_pool_gold fingerprint mismatch!\n"
+            f"Expected: {expected_fp}\nActual:   {actual_fp}"
+        )
+
+    print(f"[TEACHER_CACHE] Loaded {len(sealed_train_qids)} sealed training queries (FP: {actual_fp[:12]}...).", flush=True)
+
+    # 2. Check if valid sealed cache already exists
     if not force_fresh and TEACHER_SEAL_FILE.exists() and TEACHER_PAIRS_FILE.exists():
         try:
             seal_data = json.loads(TEACHER_SEAL_FILE.read_text(encoding="utf-8"))
             pairs_sha = sha256_file(TEACHER_PAIRS_FILE)
             if (
                 seal_data.get("pairs_sha256") == pairs_sha
+                and seal_data.get("git_commit") == git_info["head_commit"]
+                and seal_data.get("train_qids_fingerprint") == expected_fp
                 and seal_data.get("weights_sha256") == EXPECTED_SHIPPED_SHA256
                 and seal_data.get("status") == "PASS"
             ):
                 print(
-                    f"[TEACHER_CACHE] Valid sealed cache found: {TEACHER_PAIRS_FILE} "
-                    f"({seal_data.get('total_training_pairs')} pairs). Reusing.",
+                    f"[TEACHER_CACHE] Valid sealed cache matches current Git commit and split fingerprint: "
+                    f"{TEACHER_PAIRS_FILE} ({seal_data.get('total_training_pairs')} pairs). Reusing.",
                     flush=True,
                 )
                 return seal_data
         except Exception as e:
-            print(f"[TEACHER_CACHE] Could not verify existing seal: {e}. Rebuilding.", flush=True)
+            print(f"[TEACHER_CACHE] Could not reuse existing seal: {e}. Rebuilding.", flush=True)
 
-    # 2. Load audited split and inputs
-    split_audit = run_split_audit()
-    train_queries_with_gold = set(split_audit["training_partition"]["sample_train_qids"])
-    # Full list of valid training queries with in-pool gold
+    # 3. Load V2 inputs and contexts
     folds, pools, questions, v2_golds = load_v2_inputs()
     contexts = load_v2_contexts()
 
-    # Determine exact training population from audit rules
-    cal_raw_qids = split_audit["canonical_v2_total_queries"]
-    # Re-extract the exact 5,043 train qids with in-pool gold
-    held_qids = set(split_audit["held_partition"]["sample_held_qids"])  # sample
-    from tune_corpus_cap32_fusion import build_training_cap
-    _, _, all_cal_ids, _, _, _ = build_training_cap(
-        ROOT, 32, "results/corpus_index/holdout_extended_scores_cap32.pkl", depth=20
-    )
-    cal_qids = set(str(q) for q in all_cal_ids)
+    # Pre-parse and cache document sections in memory: unique doc parsed at most ONCE
+    doc_sections_cache: Dict[str, List[LegalSection]] = {}
 
-    train_raw = []
-    for f in ["fold_1", "fold_2", "fold_3", "fold_4"]:
-        train_raw.extend([str(q) for q in folds[f]])
-    train_non_cal = [q for q in train_raw if q not in cal_qids]
+    def get_cached_sections(doc_id: str) -> List[LegalSection]:
+        if doc_id not in doc_sections_cache:
+            raw_text = contexts.get(doc_id, "")
+            doc_sections_cache[doc_id] = parse_document_into_sections(
+                doc_id, raw_text, max_chunk_words=220, overlap_words=60
+            )
+        return doc_sections_cache[doc_id]
 
-    from .common import normalize_text
-    cal_norm_texts = {normalize_text(questions[q]) for q in cal_qids if q in questions}
-    held_raw_qids = [str(q) for q in folds["fold_0"] if str(q) not in cal_qids]
-    held_norm_texts = {normalize_text(questions[q]) for q in held_raw_qids}
-
-    valid_train_qids = []
-    for q in train_non_cal:
-        q_norm = normalize_text(questions[q])
-        if q_norm not in cal_norm_texts and q_norm not in held_norm_texts:
-            cand_set = set(str(d) for d in pools[q])
-            gold_set = set(str(d) for d in v2_golds.get(q, set()))
-            if len(cand_set & gold_set) > 0:
-                valid_train_qids.append(q)
-
-    print(f"[TEACHER_CACHE] Identified {len(valid_train_qids)} training queries with in-pool gold.", flush=True)
-
-    # 3. Load Shipped Teacher Model
+    # 4. Load Shipped Teacher Model
     print("[TEACHER_CACHE] Loading frozen shipped Jina model...", flush=True)
     model, tok = load_jina_base_with_shipped_weights()
     model.eval().to("cuda")
 
-    # 4. Generate pairs by processing queries in chunks
+    # 5. Process queries in chunks
     if TEACHER_PAIRS_FILE.exists():
         TEACHER_PAIRS_FILE.unlink()
 
     total_pairs = 0
+    total_attempted_pairs = 0
+    unavailable_section_docs_count = 0
     t0_start = time.time()
     out_f = open(TEACHER_PAIRS_FILE, "w", encoding="utf-8")
 
     try:
-        for chunk_idx in range(0, len(valid_train_qids), query_chunk_size):
-            chunk_qids = valid_train_qids[chunk_idx : chunk_idx + query_chunk_size]
+        for chunk_idx in range(0, len(sealed_train_qids), query_chunk_size):
+            chunk_qids = sealed_train_qids[chunk_idx : chunk_idx + query_chunk_size]
             pair_list: List[Tuple[str, str]] = []
             pair_meta: List[Tuple[str, str, int]] = []  # (qid, doc_id, section_idx)
             query_doc_secs: Dict[Tuple[str, str], List[str]] = {}
 
-            # Prepare section pairs for all candidate documents in chunk
+            # Preselect sections for all candidate documents in chunk
             for qid in chunk_qids:
                 q_text = questions[qid]
                 cand_docs = [str(d) for d in pools[qid]]
                 for doc_id in cand_docs:
-                    raw_text = contexts.get(doc_id, "")
-                    secs = parse_document_into_sections(doc_id, raw_text, max_chunk_words=220, overlap_words=60)
+                    secs = get_cached_sections(doc_id)
                     chosen_secs = preselect_legal_sections(q_text, secs, count=2)
+                    if not chosen_secs:
+                        unavailable_section_docs_count += 1
+                        continue
                     sec_texts = [s.text for s in chosen_secs]
                     query_doc_secs[(qid, doc_id)] = sec_texts
                     for s_idx, sec in enumerate(chosen_secs):
@@ -171,8 +176,9 @@ def build_teacher_cache(
                 cand_docs = [str(d) for d in pools[qid]]
                 gold_docs = set(str(d) for d in v2_golds.get(qid, set()))
 
-                pos_docs = [d for d in cand_docs if d in gold_docs]
-                non_gold_docs = [d for d in cand_docs if d not in gold_docs]
+                # Only consider documents with usable sections
+                pos_docs = [d for d in cand_docs if d in gold_docs and (qid, d) in query_doc_secs]
+                non_gold_docs = [d for d in cand_docs if d not in gold_docs and (qid, d) in query_doc_secs]
 
                 if not pos_docs or not non_gold_docs:
                     continue
@@ -186,10 +192,14 @@ def build_teacher_cache(
 
                 for p_id in pos_docs:
                     p_logit = doc_logits.get((qid, p_id), 0.0)
-                    p_secs = query_doc_secs.get((qid, p_id), [])
+                    p_secs = query_doc_secs[qid, p_id]
                     for n_id in top3_hard_negs:
                         n_logit = doc_logits.get((qid, n_id), 0.0)
-                        n_secs = query_doc_secs.get((qid, n_id), [])
+                        n_secs = query_doc_secs[qid, n_id]
+                        total_attempted_pairs += 1
+
+                        # Strict assertion: never fabricate empty or query-query pairs
+                        assert len(p_secs) > 0 and len(n_secs) > 0, "Empty sections detected in pair!"
 
                         rec = {
                             "qid": qid,
@@ -205,35 +215,62 @@ def build_teacher_cache(
                         out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                         total_pairs += 1
 
-            if (chunk_idx + query_chunk_size) % 500 == 0 or (chunk_idx + query_chunk_size) >= len(valid_train_qids):
+            if (chunk_idx + query_chunk_size) % 500 == 0 or (chunk_idx + query_chunk_size) >= len(sealed_train_qids):
                 elapsed = time.time() - t0_start
-                done_cnt = min(chunk_idx + query_chunk_size, len(valid_train_qids))
+                done_cnt = min(chunk_idx + query_chunk_size, len(sealed_train_qids))
                 print(
-                    f"[TEACHER_CACHE] Processed {done_cnt}/{len(valid_train_qids)} queries "
-                    f"({total_pairs} pairs, elapsed: {elapsed:.1f}s)",
+                    f"[TEACHER_CACHE] Processed {done_cnt}/{len(sealed_train_qids)} queries "
+                    f"({total_pairs} pairs, elapsed: {elapsed:.1f}s, unique parsed docs cached: {len(doc_sections_cache)})",
                     flush=True,
                 )
     finally:
         out_f.close()
 
-    # 5. Seal the cache
+    # 6. Seal the cache with complete provenance
     pairs_sha256 = sha256_file(TEACHER_PAIRS_FILE)
     seal = {
-        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.teacher_cache_seal.v1",
+        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.teacher_cache_seal.v2",
         "experiment_id": "HUY_D1_JINA_PASSAGE_ADAPTATION_PILOT_V2",
         "status": "PASS",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "git_commit": git_info["head_commit"],
+        "build_teacher_cache_sha256": sha256_file(SRC_DIR / "build_teacher_cache.py"),
+        "common_sha256": sha256_file(SRC_DIR / "common.py"),
+        "legal_section_parser_sha256": sha256_file(SRC_DIR / "legal_section_parser.py"),
         "weights_sha256": EXPECTED_SHIPPED_SHA256,
-        "section_parser_sha256": sha256_file(SRC_DIR / "legal_section_parser.py"),
-        "total_training_queries": len(valid_train_qids),
-        "total_training_pairs": total_pairs,
+        "train_qids_fingerprint": expected_fp,
+        "v2_queries_fingerprint": sha256_file(V2_QUERIES_JSONL),
+        "v2_candidate_pool_fingerprint": sha256_file(V2_CANDIDATE_POOL_JSONL),
+        "v2_corpus_fingerprint": sha256_file(V2_CONTEXTS_JSONL),
+        "section_parser_config": {
+            "max_chunk_words": 220,
+            "overlap_words": 60,
+            "count_sections": 2,
+            "aggregation": "MAX",
+        },
+        "hard_negative_config": {
+            "top_k_negatives": 3,
+            "strategy": "frozen_teacher_highest_non_gold",
+        },
+        "teacher_score_semantics": "raw_pre_sigmoid_logits_max_over_top2_sections",
+        "max_length": 512,
+        "coverage_statistics": {
+            "total_training_queries": len(sealed_train_qids),
+            "total_training_pairs": total_pairs,
+            "total_attempted_pairs": total_attempted_pairs,
+            "unavailable_section_docs_count": unavailable_section_docs_count,
+            "usable_pair_coverage_fraction": total_pairs / max(1, total_attempted_pairs),
+        },
         "pairs_file": str(TEACHER_PAIRS_FILE.relative_to(ROOT)),
         "pairs_sha256": pairs_sha256,
     }
 
     TEACHER_SEAL_FILE.write_text(json.dumps(seal, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"[TEACHER_CACHE] Cache sealed successfully -> {TEACHER_SEAL_FILE} (SHA256: {pairs_sha256[:12]}...)", flush=True)
+    print(
+        f"[TEACHER_CACHE] Cache sealed successfully -> {TEACHER_SEAL_FILE} "
+        f"({total_pairs} pairs, SHA256: {pairs_sha256[:12]}...)",
+        flush=True,
+    )
     return seal
 
 

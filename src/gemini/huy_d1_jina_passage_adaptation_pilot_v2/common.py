@@ -47,8 +47,13 @@ V2_CANDIDATE_POOL_JSONL = ROOT / "results/research_v2_forensic/V2_CANDIDATE_POOL
 
 # CAL Paths & Baselines
 CAL_CONTEXTS_DIR = ROOT / "DSC2026-LegalIR-main/v4_run/public_test_dataset/selected-contexts"
+CAL_TRAIN_JSON = ROOT / "DSC2026-LegalIR-main/v4_run/public_test_dataset/train.json"
 FROZEN_SECTION_CE_CV_PKL = ROOT / "results/gemini/huy_d1_legal_section_evidence_v1/legal_section_ce_cv.pkl"
 D1_PREDICTIONS_JSONL = ROOT / "results/gemini/huy_d1_legal_section_evidence_v1/S0_S1_CAL_PREDICTIONS.jsonl"
+
+EXPECTED_D1_R5 = 0.9569444444444444
+EXPECTED_T0_R5_APPROX = 0.8538888888888888
+EXPECTED_ORACLE_T0_APPROX = 0.9683333333333334
 
 
 def seed_everything(seed: int = 2026) -> None:
@@ -67,6 +72,13 @@ def sha256_file(p: Path) -> str:
     with open(p, "rb") as f:
         while chunk := f.read(65536):
             h.update(chunk)
+    return h.hexdigest()
+
+
+def compute_qid_list_fingerprint(qids: List[str]) -> str:
+    h = hashlib.sha256()
+    for q in qids:
+        h.update(f"{q}\n".encode("utf-8"))
     return h.hexdigest()
 
 
@@ -217,6 +229,26 @@ def build_pure_lora_jina_model(
     return lora_model, tok
 
 
+def get_classifier_state_hash(model) -> str:
+    """Compute deterministic SHA256 of classifier head parameters."""
+    classifier_state = model.model.classifier.state_dict() if hasattr(model, "model") else model.classifier.state_dict()
+    h = hashlib.sha256()
+    for k in sorted(classifier_state.keys()):
+        h.update(f"{k}:".encode("utf-8"))
+        h.update(classifier_state[k].detach().cpu().numpy().tobytes())
+    return h.hexdigest()
+
+
+def get_frozen_base_parameters_hash(model) -> str:
+    """Compute deterministic SHA256 over all frozen non-LoRA parameters."""
+    h = hashlib.sha256()
+    for n, p in sorted(model.named_parameters()):
+        if not p.requires_grad:
+            h.update(f"{n}:".encode("utf-8"))
+            h.update(p.detach().cpu().numpy().tobytes())
+    return h.hexdigest()
+
+
 def load_v2_contexts() -> Dict[str, str]:
     """Load canonical V2 document contexts: doc_id -> passage."""
     contexts: Dict[str, str] = {}
@@ -250,20 +282,33 @@ def load_cal_contexts() -> Dict[str, str]:
     return contexts
 
 
-def load_cal_inputs_label_free() -> Tuple[Dict[str, str], List[str], Dict[str, List[str]]]:
-    """Load CAL questions and candidate pools STRICTLY without exposing gold labels."""
-    from tune_corpus_cap32_fusion import build_training_cap
-    raw_queries, _, all_ids, extended, _, _ = build_training_cap(
-        ROOT, 32, "results/corpus_index/holdout_extended_scores_cap32.pkl", depth=20
-    )
-    queries = {q: raw_queries[q][0] for q in all_ids}
-    return queries, all_ids, extended
+def load_cal_questions_label_free() -> Tuple[List[str], Dict[str, str]]:
+    """Genuinely label-free CAL query loader: extracts ONLY question strings, NEVER touches answer labels."""
+    if not D1_PREDICTIONS_JSONL.exists():
+        raise FileNotFoundError(f"D1 predictions file not found: {D1_PREDICTIONS_JSONL}")
+    cal_qids: List[str] = []
+    with open(D1_PREDICTIONS_JSONL, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                cal_qids.append(str(json.loads(line)["qid"]))
+
+    raw = json.loads(CAL_TRAIN_JSON.read_text(encoding="utf-8"))
+    questions: Dict[str, str] = {}
+    for qid in cal_qids:
+        # Strictly read ONLY the question text field
+        questions[qid] = str(raw[qid]["question"])
+    return cal_qids, questions
 
 
-def load_cal_gold_labels(all_ids: List[str]) -> Dict[str, Set[str]]:
-    """Load CAL gold labels strictly for post-materialization zero-shot evaluation."""
-    from tune_corpus_cap32_fusion import build_training_cap
-    raw_queries, _, _, _, _, _ = build_training_cap(
-        ROOT, 32, "results/corpus_index/holdout_extended_scores_cap32.pkl", depth=20
-    )
-    return {q: set(str(d) for d in raw_queries[q][1]) for q in all_ids}
+def load_cal_candidate_pools() -> Dict[str, List[str]]:
+    """Load CAL candidate pools label-free from authoritative section CE cache."""
+    import pickle
+    cached = pickle.loads(FROZEN_SECTION_CE_CV_PKL.read_bytes())
+    scores = cached["scores"]
+    return {q: list(scores[q].keys()) for q in scores}
+
+
+def load_cal_gold_labels(cal_qids: List[str]) -> Dict[str, Set[str]]:
+    """Load CAL gold labels STRICTLY after Held V2 evaluation has materialized."""
+    raw = json.loads(CAL_TRAIN_JSON.read_text(encoding="utf-8"))
+    return {q: set(str(d) for d in raw[q]["answer"]) for q in cal_qids}

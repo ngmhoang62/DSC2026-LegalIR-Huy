@@ -1,4 +1,4 @@
-"""Score collapse audit, promotion decision, and report consistency audit."""
+"""Score collapse audit, promotion decision, and report consistency audit with strict hard gates."""
 
 from __future__ import annotations
 
@@ -16,12 +16,51 @@ def run_decision_and_artifacts() -> Dict[str, Any]:
     git_info = get_git_status()
 
     # Load all required upstream artifacts
-    held_eval = json.loads((RES_DIR / "HELD_V2_EVALUATION.json").read_text(encoding="utf-8"))
-    cal_eval = json.loads((RES_DIR / "CAL_ZERO_SHOT_EVALUATION.json").read_text(encoding="utf-8"))
-    diag = json.loads((RES_DIR / "D1_COMPLEMENTARITY_DIAGNOSTIC.json").read_text(encoding="utf-8"))
+    split_audit = json.loads((RES_DIR / "SPLIT_AUDIT.json").read_text(encoding="utf-8"))
+    shipped_parity = json.loads((RES_DIR / "SHIPPED_JINA_INITIALIZATION_PARITY.json").read_text(encoding="utf-8"))
+    contract = json.loads((RES_DIR / "TRAINABLE_PARAMETER_CONTRACT.json").read_text(encoding="utf-8"))
+    seal = json.loads((RES_DIR / "TEACHER_SCORE_CACHE_SEAL.json").read_text(encoding="utf-8"))
     stability = json.loads((RES_DIR / "TRAINING_STABILITY.json").read_text(encoding="utf-8"))
     proof = json.loads((RES_DIR / "NEURAL_UPDATE_PROOF.json").read_text(encoding="utf-8"))
     reload_parity = json.loads((RES_DIR / "ADAPTER_RELOAD_PARITY.json").read_text(encoding="utf-8"))
+    held_eval = json.loads((RES_DIR / "HELD_V2_EVALUATION.json").read_text(encoding="utf-8"))
+    cal_eval = json.loads((RES_DIR / "CAL_ZERO_SHOT_EVALUATION.json").read_text(encoding="utf-8"))
+    diag = json.loads((RES_DIR / "D1_COMPLEMENTARITY_DIAGNOSTIC.json").read_text(encoding="utf-8"))
+
+    # Hard consistency gates check
+    blocked_reasons = []
+    if split_audit.get("status") != "PASS":
+        blocked_reasons.append("Split audit failed")
+    if shipped_parity.get("status") != "PASS":
+        blocked_reasons.append("Shipped Jina parity failed")
+    if contract.get("status") != "PASS" or contract["classifier_contract"]["classifier_trainable_count"] != 0:
+        blocked_reasons.append("Trainable parameter contract violated")
+    if seal.get("status") != "PASS":
+        blocked_reasons.append("Teacher cache seal invalid")
+    if not proof["classifier_integrity"]["delta_is_strictly_zero"]:
+        blocked_reasons.append("Classifier head drifted during training")
+    if not proof["frozen_base_integrity"]["delta_is_strictly_zero"]:
+        blocked_reasons.append("Frozen base parameters drifted during training")
+    if not reload_parity.get("parity_passed"):
+        blocked_reasons.append("Pre-save vs fresh-reload parity failed (> 1e-6)")
+    if diag["d1_baseline_parity_difference"] > 1e-12:
+        blocked_reasons.append("D1 baseline parity mismatch")
+    if diag["d1_oracle_top5_t0_parity_difference"] > 1e-6:
+        blocked_reasons.append("Frozen D1 U T0 oracle parity mismatch")
+
+    if blocked_reasons:
+        verdict = "BLOCKED_CONSISTENCY_GATES"
+        verdict_reason = f"Upstream hard consistency gates failed: {', '.join(blocked_reasons)}"
+        print(f"[DECISION] BLOCKED: {verdict_reason}", flush=True)
+        # Still generate collapse audit and decision
+        collapse_audit = {
+            "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.score_collapse_audit.v2",
+            "experiment_id": "HUY_D1_JINA_PASSAGE_ADAPTATION_PILOT_V2",
+            "status": "BLOCKED",
+            "blocked_reasons": blocked_reasons,
+        }
+        (RES_DIR / "SCORE_COLLAPSE_AUDIT.json").write_text(json.dumps(collapse_audit, indent=2), encoding="utf-8")
+        return {"verdict": verdict, "reason": verdict_reason}
 
     # 1. Score-Collapse Audit Gates
     held_spearman = held_eval["comparison"]["mean_within_query_spearman"]
@@ -30,6 +69,7 @@ def run_decision_and_artifacts() -> Dict[str, Any]:
     cal_sigma_ratio = cal_eval["comparison"]["sigma_ratio_t1_over_t0"]
     nan_inf_count = stability["gradient_statistics"]["nan_inf_grad_count"]
     classifier_delta_zero = proof["classifier_integrity"]["delta_is_strictly_zero"]
+    frozen_base_delta_zero = proof["frozen_base_integrity"]["delta_is_strictly_zero"]
 
     collapse_reasons = []
     if held_spearman < 0.50:
@@ -42,13 +82,11 @@ def run_decision_and_artifacts() -> Dict[str, Any]:
         collapse_reasons.append(f"CAL sigma ratio {cal_sigma_ratio:.4f} < 0.25")
     if nan_inf_count > 0:
         collapse_reasons.append(f"Found {nan_inf_count} NaN/Inf gradients")
-    if not classifier_delta_zero:
-        collapse_reasons.append("Classifier head drifted during training")
 
     is_collapsed = len(collapse_reasons) > 0
 
     collapse_audit = {
-        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.score_collapse_audit.v1",
+        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.score_collapse_audit.v2",
         "experiment_id": "HUY_D1_JINA_PASSAGE_ADAPTATION_PILOT_V2",
         "status": "FAIL" if is_collapsed else "PASS",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -61,6 +99,7 @@ def run_decision_and_artifacts() -> Dict[str, Any]:
         "cal_sigma_ratio": cal_sigma_ratio,
         "nan_inf_grad_count": nan_inf_count,
         "classifier_delta_strictly_zero": classifier_delta_zero,
+        "frozen_base_delta_strictly_zero": frozen_base_delta_zero,
     }
     (RES_DIR / "SCORE_COLLAPSE_AUDIT.json").write_text(
         json.dumps(collapse_audit, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -97,7 +136,7 @@ def run_decision_and_artifacts() -> Dict[str, Any]:
     print(f"[DECISION] Final Scientific Verdict: {verdict}", flush=True)
     print(f"[DECISION] Rationale: {verdict_reason}", flush=True)
 
-    # 3. Generate DECISION.md
+    # 3. Generate DECISION.md dynamically
     decision_md = f"""# Scientific Decision: HUY_D1_JINA_PASSAGE_ADAPTATION_PILOT_V2
 
 ## 1. Final Verdict
@@ -106,7 +145,7 @@ def run_decision_and_artifacts() -> Dict[str, Any]:
 
 ---
 
-## 2. Quantitative Summary
+## 2. Quantitative Summary (Exact Fractional Recall@K)
 
 | Benchmark | Model | Recall@1 | Recall@5 | Recall@8 | Recall@10 | Score Std | Mean Spearman (T0→T1) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -121,15 +160,17 @@ def run_decision_and_artifacts() -> Dict[str, Any]:
 
 ## 3. D1 Complementarity Diagnostic (Oracle Top-5)
 
-- **D1 Baseline Standalone Recall@5**: `{diag['d1_baseline_recall_5']:.10f}` (574.1667 / 600)
-- **D1 Imperfect Queries Count**: `{diag['d1_imperfect_queries_count']}` queries
-- **D1 Top-5 ∪ Frozen Teacher (T0) Top-5**: `{oracle_t0:.10f}` ({diag['d1_oracle_top5_t0_recovered_count']}/26 recovered)
-- **D1 Top-5 ∪ Adapted Student (T1) Top-5**: `{oracle_t1:.10f}` ({diag['d1_oracle_top5_t1_recovered_count']}/26 recovered)
-- **Oracle Complementarity Delta**: `{diag['oracle_delta_t1_vs_t0']:+.10f}`
+- **D1 Baseline Standalone Fractional Recall@5**: `{diag['d1_baseline_recall_5']:.16f}`
+- **D1 Baseline Parity Difference vs 0.9569444444444444**: `{diag['d1_baseline_parity_difference']:.2e}`
+- **D1 Imperfect Queries Count (Recall@5 < 1.0)**: `{diag['d1_imperfect_queries_count']}` queries
+- **D1 Top-5 ∪ Frozen Teacher (T0) Top-5**: `{oracle_t0:.16f}` (Recovered: `{diag['d1_oracle_top5_t0_recovered_count']}` imperfect queries)
+- **Frozen Oracle Parity Difference vs 0.9683333333333334**: `{diag['d1_oracle_top5_t0_parity_difference']:.2e}`
+- **D1 Top-5 ∪ Adapted Student (T1) Top-5**: `{oracle_t1:.16f}` (Recovered: `{diag['d1_oracle_top5_t1_recovered_count']}` imperfect queries)
+- **Oracle Complementarity Delta (T1 - T0)**: `{diag['oracle_delta_t1_vs_t0']:+.16f}`
 
 ---
 
-## 4. Score Stability & Contract Audits
+## 4. Score Stability & Provenance Audits
 
 - **Score Collapse Audit**: `{'COLLAPSED' if is_collapsed else 'PASSED'}`
   - Held Within-Query Spearman: `{held_spearman:.4f}` (Gate: >= 0.50)
@@ -137,16 +178,16 @@ def run_decision_and_artifacts() -> Dict[str, Any]:
   - Held Sigma Ratio (T1/T0): `{held_sigma_ratio:.4f}` (Gate: >= 0.25)
   - CAL Sigma Ratio (T1/T0): `{cal_sigma_ratio:.4f}` (Gate: >= 0.25)
 - **Classifier Head Bit-Exact Immutability**: `{'PASSED (Delta = 0)' if classifier_delta_zero else 'FAILED'}`
-- **Adapter Save/Reload Max Abs Difference**: `{reload_parity['max_absolute_score_difference']:.8e}` (Gate: <= 1e-6)
+- **Frozen Base Parameters Immutability**: `{'PASSED (Delta = 0)' if frozen_base_delta_zero else 'FAILED'}`
+- **Pre-Save In-Memory vs Fresh-Reload Parity**: `{reload_parity['max_absolute_pre_save_vs_reload_difference']:.8e}` (Gate: <= 1e-6)
 - **Total LoRA L2 Parameter Drift**: `{proof['lora_update_summary']['total_l2_drift']:.6f}`
-- **NaN/Inf Gradients**: `{nan_inf_count}`
+- **NaN/Inf Gradients Count**: `{nan_inf_count}`
 """
     (RES_DIR / "DECISION.md").write_text(decision_md, encoding="utf-8")
     print(f"[DECISION] Generated DECISION.md", flush=True)
 
-    # 4. Report Consistency Audit
     consistency_audit = {
-        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.report_consistency.v1",
+        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.report_consistency.v2",
         "experiment_id": "HUY_D1_JINA_PASSAGE_ADAPTATION_PILOT_V2",
         "status": "PASS",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -159,13 +200,17 @@ def run_decision_and_artifacts() -> Dict[str, Any]:
             "cal_t0_r5": cal_eval["teacher_t0_metrics"]["recall_5"],
             "cal_t1_r5": cal_eval["adapted_t1_metrics"]["recall_5"],
             "cal_delta_r5": delta_cal_r5,
+            "d1_baseline_r5": diag["d1_baseline_recall_5"],
             "d1_oracle_t0": oracle_t0,
             "d1_oracle_t1": oracle_t1,
         },
         "gates_status": {
             "score_collapse_passed": not is_collapsed,
             "classifier_immutable": classifier_delta_zero,
+            "frozen_base_immutable": frozen_base_delta_zero,
             "reload_parity_passed": reload_parity["parity_passed"],
+            "d1_parity_passed": diag["d1_baseline_parity_difference"] <= 1e-12,
+            "oracle_t0_parity_passed": diag["d1_oracle_top5_t0_parity_difference"] <= 1e-6,
         },
     }
     (RES_DIR / "REPORT_CONSISTENCY_AUDIT.json").write_text(

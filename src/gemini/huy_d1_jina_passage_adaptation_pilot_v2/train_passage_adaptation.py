@@ -1,4 +1,4 @@
-"""Train Pure-LoRA passage adaptation with pairwise ranking and teacher preservation."""
+"""Train Pure-LoRA passage adaptation with pairwise ranking, teacher preservation, and pre-save score reference."""
 
 from __future__ import annotations
 
@@ -21,23 +21,15 @@ from .common import (
     RES_DIR,
     ROOT,
     build_pure_lora_jina_model,
+    get_classifier_state_hash,
+    get_frozen_base_parameters_hash,
     get_git_status,
     seed_everything,
     sha256_file,
 )
 
 TEACHER_PAIRS_FILE = RES_DIR / "TEACHER_TRAINING_PAIRS.jsonl"
-TEACHER_SEAL_FILE = RES_DIR / "TEACHER_SCORE_CACHE_SEAL.json"
-
-
-def get_classifier_state_hash(model) -> str:
-    """Compute SHA256 of the classifier head parameters."""
-    classifier_state = model.model.classifier.state_dict()
-    h = hashlib.sha256()
-    for k in sorted(classifier_state.keys()):
-        h.update(f"{k}:".encode("utf-8"))
-        h.update(classifier_state[k].detach().cpu().numpy().tobytes())
-    return h.hexdigest()
+PRE_SAVE_REFERENCE_FILE = RES_DIR / "PRE_SAVE_ADAPTED_SCORE_REFERENCE.json"
 
 
 def train_adaptation(
@@ -48,6 +40,7 @@ def train_adaptation(
     max_grad_norm: float = 1.0,
     micro_batch_size: int = 4,
     effective_batch_size: int = 16,
+    sample_eval_pairs_count: int = 64,
     seed: int = 2026,
 ) -> Dict[str, Any]:
     print("=== STAGE: PURE-LORA PASSAGE ADAPTATION TRAINING ===", flush=True)
@@ -64,7 +57,10 @@ def train_adaptation(
     with open(TEACHER_PAIRS_FILE, "r", encoding="utf-8") as f:
         for line in f:
             if line.strip():
-                pairs_data.append(json.loads(line))
+                rec = json.loads(line)
+                # Enforce no empty sections
+                assert rec["pos_sections"] and rec["neg_sections"], "Empty section found in training pair!"
+                pairs_data.append(rec)
 
     print(f"[TRAIN] Loaded {len(pairs_data)} training pairs.", flush=True)
 
@@ -77,9 +73,11 @@ def train_adaptation(
     model, tok = build_pure_lora_jina_model(r=8, lora_alpha=16, lora_dropout=0.05)
     model.train().to("cuda")
 
-    # Snapshot initial classifier state
+    # Snapshot initial classifier and base states
     initial_classifier_hash = get_classifier_state_hash(model)
+    initial_frozen_base_hash = get_frozen_base_parameters_hash(model)
     print(f"[TRAIN] Initial classifier head SHA256: {initial_classifier_hash}", flush=True)
+    print(f"[TRAIN] Initial frozen base SHA256:       {initial_frozen_base_hash}", flush=True)
 
     # Snapshot initial LoRA parameter states
     initial_lora_states = {
@@ -113,7 +111,7 @@ def train_adaptation(
     t0_train = time.time()
     optimizer_step = 0
     raw_grad_norms: List[float] = []
-    clipped_grad_norms: List[float] = []
+    post_clip_grad_norms: List[float] = []
     ranking_losses: List[float] = []
     teacher_losses: List[float] = []
     total_losses: List[float] = []
@@ -128,8 +126,8 @@ def train_adaptation(
 
         for pair in mb_pairs:
             q_text = pair["query_text"]
-            pos_secs = pair["pos_sections"] or [q_text]
-            neg_secs = pair["neg_sections"] or [q_text]
+            pos_secs = pair["pos_sections"]
+            neg_secs = pair["neg_sections"]
             t_pos = float(pair["teacher_pos_logit"])
             t_neg = float(pair["teacher_neg_logit"])
             w = float(pair["pair_weight"])
@@ -178,20 +176,19 @@ def train_adaptation(
             for param_group in optimizer.param_groups:
                 param_group["lr"] = cur_lr
 
-            # Compute raw gradient norm
-            total_norm = 0.0
+            # Check NaN/Inf in grads before clipping
             for p in trainable_params:
                 if p.grad is not None:
-                    param_norm = p.grad.detach().data.norm(2).item()
-                    if math.isnan(param_norm) or math.isinf(param_norm):
+                    p_norm = p.grad.detach().data.norm(2).item()
+                    if math.isnan(p_norm) or math.isinf(p_norm):
                         nan_inf_count += 1
-                    total_norm += param_norm ** 2
-            raw_norm = math.sqrt(total_norm)
-            raw_grad_norms.append(raw_norm)
 
-            # Clip gradient norm
-            clipped_norm = float(torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=max_grad_norm).item())
-            clipped_grad_norms.append(clipped_norm)
+            # clip_grad_norm_ returns total norm BEFORE clipping
+            raw_norm = float(torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=max_grad_norm).item())
+            post_clip_norm = min(raw_norm, max_grad_norm)
+
+            raw_grad_norms.append(raw_norm)
+            post_clip_grad_norms.append(post_clip_norm)
 
             # Step optimizer
             optimizer.step()
@@ -205,7 +202,7 @@ def train_adaptation(
                     f"Total Loss: {np.mean(total_losses[-50:]):.4f} | "
                     f"Rank Loss: {np.mean(ranking_losses[-50:]):.4f} | "
                     f"Teacher Loss: {np.mean(teacher_losses[-50:]):.4f} | "
-                    f"Grad Norm: {raw_norm:.3f} -> {clipped_norm:.3f}",
+                    f"Raw Grad: {raw_norm:.3f} -> Post-Clip: {post_clip_norm:.3f}",
                     flush=True,
                 )
 
@@ -215,7 +212,7 @@ def train_adaptation(
     # 5. Post-training Verifications
     print("[TRAIN] Running post-training parameter integrity assertions...", flush=True)
 
-    # Check classifier head bit-exact immutability
+    # Classifier head bit-exact immutability
     post_classifier_hash = get_classifier_state_hash(model)
     classifier_delta_is_zero = (initial_classifier_hash == post_classifier_hash)
     print(f"[TRAIN] Post-training classifier head SHA256: {post_classifier_hash}", flush=True)
@@ -226,7 +223,18 @@ def train_adaptation(
             f"Post:    {post_classifier_hash}"
         )
 
-    # Check LoRA parameter update proof
+    # Frozen base parameters bit-exact immutability
+    post_frozen_base_hash = get_frozen_base_parameters_hash(model)
+    frozen_base_delta_is_zero = (initial_frozen_base_hash == post_frozen_base_hash)
+    print(f"[TRAIN] Post-training frozen base SHA256:       {post_frozen_base_hash}", flush=True)
+    if not frozen_base_delta_is_zero:
+        raise RuntimeError(
+            f"BLOCKED_FROZEN_BASE_DRIFT: Frozen base parameters changed during training!\n"
+            f"Initial: {initial_frozen_base_hash}\n"
+            f"Post:    {post_frozen_base_hash}"
+        )
+
+    # LoRA parameter update proof
     lora_drifts = []
     for n, p in model.named_parameters():
         if p.requires_grad:
@@ -245,13 +253,61 @@ def train_adaptation(
 
     print(f"[TRAIN] Total LoRA L2 drift: {total_lora_l2_drift:.6f}", flush=True)
 
-    # 6. Save Adapter
+    # 6. Materialize PRE_SAVE_ADAPTED_SCORE_REFERENCE.json using IN-MEMORY model
+    print("[TRAIN] Scoring deterministic sample with IN-MEMORY adapted model before saving...", flush=True)
+    model.eval()
+
+    sample_pool = pairs_data[:sample_eval_pairs_count]
+    pre_save_records = []
+
+    for idx, p in enumerate(sample_pool):
+        q_text = p["query_text"]
+        pos_secs = p["pos_sections"]
+        inputs = tok(
+            [(q_text, s) for s in pos_secs],
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+            max_length=512,
+        ).to("cuda")
+        with torch.no_grad():
+            s_logits = model(**inputs, return_dict=True).logits.view(-1).float()
+            doc_score = float(torch.max(s_logits).cpu().item())
+
+        h = hashlib.sha256()
+        for s in pos_secs:
+            h.update(s.encode("utf-8"))
+        sec_fp = h.hexdigest()
+
+        pre_save_records.append({
+            "sample_index": idx,
+            "qid": p["qid"],
+            "doc_id": p["pos_doc_id"],
+            "query_text": q_text,
+            "sections": pos_secs,
+            "section_fingerprint": sec_fp,
+            "pre_save_adapted_score": doc_score,
+        })
+
+    ref_data = {
+        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.pre_save_reference.v1",
+        "experiment_id": "HUY_D1_JINA_PASSAGE_ADAPTATION_PILOT_V2",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "git_commit": git_info["head_commit"],
+        "sample_size": len(pre_save_records),
+        "scoring_semantics": "in_memory_adapted_max_over_top2_sections",
+        "records": pre_save_records,
+    }
+    PRE_SAVE_REFERENCE_FILE.write_text(json.dumps(ref_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"[TRAIN] Materialized {len(pre_save_records)} pre-save reference scores -> {PRE_SAVE_REFERENCE_FILE}", flush=True)
+
+    # 7. Save Adapter to disk
     print(f"[TRAIN] Saving adapted LoRA weights to {ADAPTER_DIR}...", flush=True)
     model.save_pretrained(ADAPTER_DIR)
 
-    # Save artifacts
+    # Save training stability artifact
     stability_data = {
-        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.training_stability.v1",
+        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.training_stability.v2",
         "experiment_id": "HUY_D1_JINA_PASSAGE_ADAPTATION_PILOT_V2",
         "status": "PASS",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -263,10 +319,11 @@ def train_adaptation(
         "warmup_steps": warmup_steps,
         "final_learning_rate": cur_lr,
         "gradient_statistics": {
+            "clip_threshold": max_grad_norm,
             "mean_raw_grad_norm": float(np.mean(raw_grad_norms)),
             "max_raw_grad_norm": float(np.max(raw_grad_norms)),
-            "mean_clipped_grad_norm": float(np.mean(clipped_grad_norms)),
-            "max_clipped_grad_norm": float(np.max(clipped_grad_norms)),
+            "mean_post_clip_grad_norm": float(np.mean(post_clip_grad_norms)),
+            "max_post_clip_grad_norm": float(np.max(post_clip_grad_norms)),
             "nan_inf_grad_count": nan_inf_count,
         },
         "loss_statistics": {
@@ -276,11 +333,12 @@ def train_adaptation(
         },
         "total_lora_l2_drift": total_lora_l2_drift,
     }
-    stability_path = RES_DIR / "TRAINING_STABILITY.json"
-    stability_path.write_text(json.dumps(stability_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    (RES_DIR / "TRAINING_STABILITY.json").write_text(
+        json.dumps(stability_data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
     update_proof_data = {
-        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.neural_update_proof.v1",
+        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.neural_update_proof.v2",
         "experiment_id": "HUY_D1_JINA_PASSAGE_ADAPTATION_PILOT_V2",
         "status": "PASS",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -290,6 +348,11 @@ def train_adaptation(
             "post_training_sha256": post_classifier_hash,
             "delta_is_strictly_zero": classifier_delta_is_zero,
         },
+        "frozen_base_integrity": {
+            "initial_sha256": initial_frozen_base_hash,
+            "post_training_sha256": post_frozen_base_hash,
+            "delta_is_strictly_zero": frozen_base_delta_is_zero,
+        },
         "lora_update_summary": {
             "total_trainable_tensors": len(lora_drifts),
             "total_l2_drift": total_lora_l2_drift,
@@ -297,8 +360,9 @@ def train_adaptation(
         },
         "per_parameter_drifts": lora_drifts,
     }
-    update_proof_path = RES_DIR / "NEURAL_UPDATE_PROOF.json"
-    update_proof_path.write_text(json.dumps(update_proof_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    (RES_DIR / "NEURAL_UPDATE_PROOF.json").write_text(
+        json.dumps(update_proof_data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     print(f"[TRAIN] Saved stability and update proof artifacts.", flush=True)
 
     return stability_data

@@ -1,4 +1,4 @@
-"""Audit data split: enforce strict CAL exclusion and Unicode question text deduplication."""
+"""Audit data split: enforce strict CAL exclusion, text deduplication, and full sealed lists."""
 
 from __future__ import annotations
 
@@ -7,13 +7,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-from tune_corpus_cap32_fusion import build_training_cap
 from .common import (
+    CAL_TRAIN_JSON,
+    D1_PREDICTIONS_JSONL,
     RES_DIR,
     ROOT,
+    SRC_DIR,
+    V2_CANDIDATE_POOL_JSONL,
+    V2_CONTEXTS_JSONL,
+    V2_QUERIES_JSONL,
+    compute_qid_list_fingerprint,
     get_git_status,
+    load_cal_questions_label_free,
     load_v2_inputs,
     normalize_text,
+    sha256_file,
 )
 
 
@@ -27,23 +35,19 @@ def run_split_audit() -> Dict[str, Any]:
     v2_qids = sorted(list(pools.keys()), key=lambda x: int(x) if x.isdigit() else x)
     total_v2 = len(v2_qids)
 
-    # 2. Load CAL queries strictly label-free
-    raw_queries, _, all_ids, _, _, _ = build_training_cap(
-        ROOT, 32, "results/corpus_index/holdout_extended_scores_cap32.pkl", depth=20
-    )
-    cal_qids: Set[str] = set(str(q) for q in all_ids)
-    cal_norm_texts: Set[str] = {normalize_text(raw_queries[q][0]) for q in all_ids}
+    # 2. Load CAL queries GENUINELY label-free (question text only, ZERO answers read)
+    cal_qids_list, cal_questions = load_cal_questions_label_free()
+    cal_qids: Set[str] = set(cal_qids_list)
+    cal_norm_texts: Set[str] = {normalize_text(cal_questions[q]) for q in cal_qids_list}
 
     # 3. Held Fold 0 Population
     held_raw_qids = [str(q) for q in folds["fold_0"]]
     held_non_cal_qids = [q for q in held_raw_qids if q not in cal_qids]
     held_cal_removed = len(held_raw_qids) - len(held_non_cal_qids)
 
-    # Check CAL text overlap in held
     held_cal_text_overlap = [
         q for q in held_non_cal_qids if normalize_text(questions[q]) in cal_norm_texts
     ]
-    # For held evaluation, keep non-CAL qids
     held_final_qids = held_non_cal_qids
     held_norm_texts: Set[str] = {normalize_text(questions[q]) for q in held_final_qids}
 
@@ -83,9 +87,18 @@ def run_split_audit() -> Dict[str, Any]:
         if len(cand_set & gold_set) > 0:
             train_with_in_pool_gold.append(q)
 
-    # Provenance audit artifact
+    # Order lists deterministically
+    train_final_qids.sort(key=lambda x: int(x) if x.isdigit() else x)
+    train_with_in_pool_gold.sort(key=lambda x: int(x) if x.isdigit() else x)
+    held_final_qids.sort(key=lambda x: int(x) if x.isdigit() else x)
+
+    # Compute fingerprints
+    train_final_fp = compute_qid_list_fingerprint(train_final_qids)
+    train_gold_fp = compute_qid_list_fingerprint(train_with_in_pool_gold)
+    held_final_fp = compute_qid_list_fingerprint(held_final_qids)
+
     audit_data = {
-        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.split_audit.v1",
+        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.split_audit.v2",
         "experiment_id": "HUY_D1_JINA_PASSAGE_ADAPTATION_PILOT_V2",
         "status": "PASS",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -96,9 +109,10 @@ def run_split_audit() -> Dict[str, Any]:
             "fold_name": "fold_0",
             "raw_queries_count": len(held_raw_qids),
             "cal_qids_removed_count": held_cal_removed,
-            "non_cal_queries_count": len(held_final_qids),
+            "final_held_queries_count": len(held_final_qids),
             "cal_text_overlap_count": len(held_cal_text_overlap),
-            "sample_held_qids": held_final_qids[:5],
+            "held_qids_final_fingerprint": held_final_fp,
+            "held_qids_final": held_final_qids,
         },
         "training_partition": {
             "folds": ["fold_1", "fold_2", "fold_3", "fold_4"],
@@ -110,8 +124,11 @@ def run_split_audit() -> Dict[str, Any]:
             "held_text_overlap_removed_count": len(train_held_text_removed),
             "held_text_overlap_removed_details": train_held_text_removed,
             "final_train_queries_count": len(train_final_qids),
-            "train_queries_with_in_pool_gold": len(train_with_in_pool_gold),
-            "sample_train_qids": train_with_in_pool_gold[:5],
+            "train_qids_final_fingerprint": train_final_fp,
+            "train_qids_final": train_final_qids,
+            "train_queries_with_in_pool_gold_count": len(train_with_in_pool_gold),
+            "train_qids_with_in_pool_gold_fingerprint": train_gold_fp,
+            "train_qids_with_in_pool_gold": train_with_in_pool_gold,
         },
         "anti_contamination_assertion": {
             "train_cal_qid_overlap_is_zero": len(set(train_final_qids) & cal_qids) == 0,
@@ -127,7 +144,30 @@ def run_split_audit() -> Dict[str, Any]:
 
     out_path = RES_DIR / "SPLIT_AUDIT.json"
     out_path.write_text(json.dumps(audit_data, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"[AUDIT] Split audit saved -> {out_path} (Train: {len(train_with_in_pool_gold)}, Held: {len(held_final_qids)})", flush=True)
+
+    # Companion CAL access audit
+    cal_access_audit = {
+        "schema_version": "dsc2026.gemini.huy_d1_jina_passage_adaptation_pilot_v2.cal_access_audit.v1",
+        "experiment_id": "HUY_D1_JINA_PASSAGE_ADAPTATION_PILOT_V2",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "git_commit": git_info["head_commit"],
+        "status": "PASS",
+        "cal_qids_source": str(D1_PREDICTIONS_JSONL.relative_to(ROOT)),
+        "cal_questions_source": str(CAL_TRAIN_JSON.relative_to(ROOT)),
+        "fields_accessed": ["question"],
+        "fields_strictly_forbidden_and_excluded": ["answer"],
+        "cal_gold_structure_passed_to_pre_cal_stages": False,
+        "cal_gold_allowed_stage": "Stage 8 (evaluate_cal_zero_shot.py) ONLY after HELD_V2_EVALUATION.json exists",
+    }
+    (RES_DIR / "CAL_ACCESS_AUDIT.json").write_text(
+        json.dumps(cal_access_audit, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    print(
+        f"[AUDIT] Split audit saved -> {out_path} "
+        f"(Train with gold: {len(train_with_in_pool_gold)}, Held: {len(held_final_qids)})",
+        flush=True,
+    )
     return audit_data
 
 
