@@ -237,15 +237,15 @@ def generate_forensics():
     pooled_r5 = float(
         np.mean([len(set(d1_preds[q]) & gold[q]) / max(1, len(gold[q])) for q in all_ids])
     )
-    print(f"Reproduced Pooled Recall@5: {pooled_r5:.16f}")
+    print(f"Reproduced Pooled Recall@5: {pooled_r5:.16f}", flush=True)
     for b in sorted(block_recalls_computed):
-        print(f"Block {b} Recall@5: {block_recalls_computed[b]:.6f}")
+        print(f"Block {b} Recall@5: {block_recalls_computed[b]:.6f}", flush=True)
 
     r5_parity = abs(pooled_r5 - EXPECTED_D1_R5) < 1e-12
     block_parity = all(
         abs(block_recalls_computed[b] - EXPECTED_BLOCK_RECALLS[b]) < 1e-9 for b in ["A", "B", "C", "D"]
     )
-    print(f"Parity Exact: r5={r5_parity}, blocks={block_parity}")
+    print(f"Parity Exact: r5={r5_parity}, blocks={block_parity}", flush=True)
 
     # Map each query to its held block
     qid_to_block = {}
@@ -261,7 +261,7 @@ def generate_forensics():
         if len(top5_hits) < len(q_gold):
             imperfect_qids.append(q)
 
-    print(f"Total imperfect-recall queries: {len(imperfect_qids)} / 600")
+    print(f"Total imperfect-recall queries: {len(imperfect_qids)} / 600", flush=True)
 
     # Global summary accumulators
     total_missed_golds = 0
@@ -285,7 +285,9 @@ def generate_forensics():
     # Sorted channel names:
     score_channel_names = sorted(full_channels.keys())
 
-    for q in imperfect_qids:
+    print(f"Analyzing {len(imperfect_qids)} imperfect queries...", flush=True)
+    for q_idx, q in enumerate(imperfect_qids, 1):
+        print(f"[{q_idx}/{len(imperfect_qids)}] Processing qid={q}...", flush=True)
         b = qid_to_block[q]
         dist_by_block[b] += 1
         q_text = queries[q][0]
@@ -381,7 +383,7 @@ def generate_forensics():
             r = doc_to_d1_rank.get(d)
             idx = cand_to_idx.get(d)
             final_score = float(scores_arr[idx]) if idx is not None else None
-            d_text = docs[d] if d in docs else ""
+            d_text = docs[d]
             short_excerpt = (d_text[:300] + "...") if len(d_text) > 300 else d_text
             jina_passages = top_passages(q_text, d_text, count=2) if d_text else []
 
@@ -607,7 +609,7 @@ def generate_forensics():
                 continue
             seen_text_docs.add(doc_id)
 
-            t = docs[doc_id] if doc_id in docs else ""
+            t = docs[doc_id]
             t_excerpt = t[:2000]
             d_type = doc_type(t) if t else None
             d_num = own_number(t) if t else None
