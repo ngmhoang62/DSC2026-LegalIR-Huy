@@ -52,6 +52,9 @@ def run_synthetic_smoke_test() -> dict:
     assert len(d1_t5) == 5, "Expected 5 D1 docs"
     assert len(sec_t5) == 5, "Expected 5 Section docs"
 
+    # Ensure gold is in slate and slate has non-gold
+    golds = {sample_q: {d1_t5[0]}}
+
     # 3. Test pairwise training set construction
     X_pairs = []
     y_pairs = []
