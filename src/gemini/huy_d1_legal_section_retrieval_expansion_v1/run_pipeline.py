@@ -26,6 +26,7 @@ from .audit_lexical_provenance import run_lexical_provenance_audit
 from .audit_parser_parity import run_parser_parity_audit
 from .build_artifacts import (
     build_decision_report,
+    build_final_run_provenance,
     build_source_provenance,
     run_report_consistency_audit,
 )
@@ -87,9 +88,9 @@ def run_pipeline() -> None:
         print("[FATAL] Smoke test failed!", flush=True)
         sys.exit(1)
 
-    # STEP 5: Candidate addition generation & sealing
-    print("\n[STEP 5] Generating and Sealing Candidate Additions (CAL & V2)...", flush=True)
-    run_all_candidate_generation()
+    # STEP 5: Candidate addition generation & sealing (ZERO REUSE FRESH RUN)
+    print("\n[STEP 5] Generating and Sealing Candidate Additions with FRESH REBUILD (CAL & V2)...", flush=True)
+    run_all_candidate_generation(force_rebuild=True)
 
     # STEP 6: Recall evaluation & forensics
     print("\n[STEP 6] Evaluating Expansion Recalls and Forensics...", flush=True)
@@ -99,9 +100,10 @@ def run_pipeline() -> None:
     print("\n[STEP 7] Running Generator Complementarity Audit...", flush=True)
     comp_res = run_complementarity_audit()
 
-    # STEP 8: Build artifacts & DECISION.md
+    # STEP 8: Build artifacts, final run provenance & DECISION.md
     print("\n[STEP 8] Building Authoritative Artifacts and DECISION.md...", flush=True)
     build_source_provenance()
+    build_final_run_provenance()
     build_decision_report()
 
     # STEP 9: Report consistency audit

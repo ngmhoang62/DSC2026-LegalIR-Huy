@@ -119,6 +119,18 @@ def compute_corpus_fingerprint(corpus: Dict[str, Dict[str, Any]]) -> str:
     return h.hexdigest()
 
 
+def compute_v2_corpus_fingerprint(corpus: Dict[str, Dict[str, Any]]) -> str:
+    return compute_corpus_fingerprint(corpus)
+
+
+def compute_v2_query_fingerprint(v2_qids: List[str], queries: Dict[str, str]) -> str:
+    return compute_query_fingerprint(v2_qids, queries)
+
+
+def compute_v2_pool_fingerprint(v2_qids: List[str], pools: Dict[str, List[str]]) -> str:
+    return compute_candidate_fingerprint(v2_qids, pools)
+
+
 def load_cal_corpus() -> Dict[str, Dict[str, Any]]:
     """Load all 8,532 raw context documents from selected-contexts."""
     files = sorted(CAL_CONTEXTS_DIR.glob("context_*.json"))

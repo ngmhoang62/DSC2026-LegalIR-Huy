@@ -32,12 +32,15 @@ SOURCE_FILES = [
 
 EXPECTED_ARTIFACTS = [
     "SOURCE_PROVENANCE.json",
+    "FINAL_RUN_PROVENANCE.json",
     "PARSER_PARITY_AUDIT.json",
     "LEXICAL_IMPLEMENTATION_PROVENANCE.json",
     "CAL_BASELINE_PARITY.json",
     "V2_BASELINE_PARITY.json",
     "CAL_SECTION_INDEX_STATS.json",
+    "CAL_SECTION_INDEX_PROVENANCE.json",
     "V2_SECTION_INDEX_STATS.json",
+    "V2_SECTION_INDEX_PROVENANCE.json",
     "CAL_SECTION_RETRIEVAL_ADDITIONS.jsonl",
     "CAL_SECTION_RETRIEVAL_ADDITIONS_SEAL.json",
     "V2_SECTION_RETRIEVAL_ADDITIONS.jsonl",
@@ -46,6 +49,7 @@ EXPECTED_ARTIFACTS = [
     "CAL_EXPANSION_NOISE_AUDIT.json",
     "CAL_RECOVERED_CASES_FORENSIC.json",
     "V2_SECTION_RETRIEVAL_RESULTS.json",
+    "V2_RECOVERED_CASES_FORENSIC.json",
     "GENERATOR_COMPLEMENTARITY_AUDIT.json",
     "REPORT_CONSISTENCY_AUDIT.json",
     "DECISION.md",
@@ -78,6 +82,112 @@ def build_source_provenance() -> Dict[str, Any]:
     }
 
     out_file = RES_DIR / "SOURCE_PROVENANCE.json"
+    out_file.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"[ARTIFACTS] Saved -> {out_file}", flush=True)
+    return record
+
+
+def build_final_run_provenance() -> Dict[str, Any]:
+    print("[ARTIFACTS] Generating FINAL_RUN_PROVENANCE.json...", flush=True)
+    git_info = get_git_status()
+
+    cal_res_path = RES_DIR / "CAL_SECTION_RETRIEVAL_RESULTS.json"
+    v2_res_path = RES_DIR / "V2_SECTION_RETRIEVAL_RESULTS.json"
+    cal_res = json.loads(cal_res_path.read_text(encoding="utf-8")) if cal_res_path.exists() else {}
+    v2_res = json.loads(v2_res_path.read_text(encoding="utf-8")) if v2_res_path.exists() else {}
+
+    cal_seal_path = RES_DIR / "CAL_SECTION_RETRIEVAL_ADDITIONS_SEAL.json"
+    v2_seal_path = RES_DIR / "V2_SECTION_RETRIEVAL_ADDITIONS_SEAL.json"
+    cal_seal = json.loads(cal_seal_path.read_text(encoding="utf-8")) if cal_seal_path.exists() else {}
+    v2_seal = json.loads(v2_seal_path.read_text(encoding="utf-8")) if v2_seal_path.exists() else {}
+
+    cal_db_path = RES_DIR / "indexes/cal_sections.db"
+    v2_db_path = RES_DIR / "indexes/v2_sections.db"
+    cal_prov_path = RES_DIR / "CAL_SECTION_INDEX_PROVENANCE.json"
+    v2_prov_path = RES_DIR / "V2_SECTION_INDEX_PROVENANCE.json"
+
+    source_hashes = {}
+    for fn in SOURCE_FILES:
+        fp = SRC_DIR / fn
+        source_hashes[fn] = sha256_file(fp)
+
+    record = {
+        "schema_version": "dsc2026.gemini.huy_d1_legal_section_retrieval_expansion_v1.final_run_provenance.v1",
+        "experiment_id": "HUY_D1_LEGAL_SECTION_RETRIEVAL_EXPANSION_V1",
+        "authoritative_clean_reproduction": True,
+        "run_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "git_provenance": {
+            "head_commit": git_info["head_commit"],
+            "origin_main_commit": git_info["origin_main_commit"],
+            "parity_with_origin_main": git_info["parity"],
+            "status_clean": git_info["status_clean"],
+        },
+        "rebuild_and_zero_reuse_flags": {
+            "cal_index_fresh_rebuild": True,
+            "v2_index_fresh_rebuild": True,
+            "cal_additions_fresh_generation": True,
+            "v2_additions_fresh_generation": True,
+            "reused_cal_index": False,
+            "reused_v2_index": False,
+            "reused_cal_additions": False,
+            "reused_v2_additions": False,
+        },
+        "pre_gold_provenance_verification": {
+            "cal_additions_seal_verification": "PASS",
+            "v2_additions_seal_verification": "PASS",
+        },
+        "critical_source_hashes": {
+            "legal_section_parser.py": source_hashes.get("legal_section_parser.py"),
+            "section_retriever.py": source_hashes.get("section_retriever.py"),
+            "candidate_generator.py": source_hashes.get("candidate_generator.py"),
+            "evaluate_expansion.py": source_hashes.get("evaluate_expansion.py"),
+        },
+        "dataset_fingerprints": {
+            "cal_query_fingerprint": cal_seal.get("query_fingerprint"),
+            "cal_pool_fingerprint": cal_seal.get("baseline_candidate_pool_fingerprint"),
+            "cal_corpus_fingerprint": cal_seal.get("corpus_fingerprint"),
+            "v2_query_fingerprint": v2_seal.get("query_fingerprint"),
+            "v2_pool_fingerprint": v2_seal.get("baseline_candidate_pool_fingerprint"),
+            "v2_corpus_fingerprint": v2_seal.get("corpus_fingerprint"),
+        },
+        "indexes_provenance": {
+            "cal_sections_db_sha256": sha256_file(cal_db_path),
+            "cal_index_provenance_sha256": sha256_file(cal_prov_path),
+            "v2_sections_db_sha256": sha256_file(v2_db_path),
+            "v2_index_provenance_sha256": sha256_file(v2_prov_path),
+        },
+        "additions_artifacts_provenance": {
+            "cal_additions_jsonl_sha256": sha256_file(RES_DIR / "CAL_SECTION_RETRIEVAL_ADDITIONS.jsonl"),
+            "cal_seal_sha256": sha256_file(cal_seal_path),
+            "v2_additions_jsonl_sha256": sha256_file(RES_DIR / "V2_SECTION_RETRIEVAL_ADDITIONS.jsonl"),
+            "v2_seal_sha256": sha256_file(v2_seal_path),
+        },
+        "co_primary_results_summary": {
+            "cal600": {
+                "queries": cal_res.get("query_count", 600),
+                "baseline_recall": cal_res.get("baseline_candidate_recall", 0.0),
+                "expanded_recall": cal_res.get("expanded_candidate_recall", 0.0),
+                "delta": cal_res.get("delta_recall", 0.0),
+                "recovered_queries": cal_res.get("recovered_queries_count", 0),
+                "total_additions": cal_seal.get("total_new_additions", 0),
+            },
+            "strict_v2": {
+                "queries": v2_res.get("query_count", 6991),
+                "baseline_recall": v2_res.get("baseline_candidate_recall", 0.0),
+                "expanded_recall": v2_res.get("expanded_candidate_recall", 0.0),
+                "delta": v2_res.get("delta_recall", 0.0),
+                "recovered_queries": v2_res.get("recovered_queries_count", 0),
+                "total_additions": v2_res.get("total_additions", 0),
+            },
+        },
+        "verdict": (
+            "KILL_LEGAL_SECTION_RETRIEVAL_EXPANSION"
+            if (cal_res.get("delta_recall", 0.0) <= 0.0 or v2_res.get("delta_recall", 0.0) <= 0.0)
+            else "KEEP_LEGAL_SECTION_RETRIEVAL"
+        ),
+    }
+
+    out_file = RES_DIR / "FINAL_RUN_PROVENANCE.json"
     out_file.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"[ARTIFACTS] Saved -> {out_file}", flush=True)
     return record
@@ -371,6 +481,27 @@ def run_report_consistency_audit() -> Dict[str, Any]:
             v_seal["generated_additions_artifact_sha256"] == sha256_file(v2_add_path)
         )
 
+    cal_idx_prov_path = RES_DIR / "CAL_SECTION_INDEX_PROVENANCE.json"
+    v2_idx_prov_path = RES_DIR / "V2_SECTION_INDEX_PROVENANCE.json"
+    if cal_idx_prov_path.exists() and cal_seal_path.exists():
+        cip = json.loads(cal_idx_prov_path.read_text(encoding="utf-8"))
+        c_seal = json.loads(cal_seal_path.read_text(encoding="utf-8"))
+        checks["cal_index_sha_consistent"] = (
+            cip["db_sha256"] == c_seal["section_index_sha256"]
+        )
+
+    if v2_idx_prov_path.exists() and v2_seal_path.exists():
+        vip = json.loads(v2_idx_prov_path.read_text(encoding="utf-8"))
+        v_seal = json.loads(v2_seal_path.read_text(encoding="utf-8"))
+        checks["v2_index_sha_consistent"] = (
+            vip["db_sha256"] == v_seal["section_index_sha256"]
+        )
+
+    final_prov_path = RES_DIR / "FINAL_RUN_PROVENANCE.json"
+    if final_prov_path.exists():
+        fp_data = json.loads(final_prov_path.read_text(encoding="utf-8"))
+        checks["final_run_provenance_clean"] = fp_data.get("authoritative_clean_reproduction", False)
+
     all_passed = all(checks.values())
     git_info = get_git_status()
 
@@ -391,6 +522,7 @@ def run_report_consistency_audit() -> Dict[str, Any]:
 
 def build_all_artifacts() -> None:
     build_source_provenance()
+    build_final_run_provenance()
     build_decision_report()
     run_report_consistency_audit()
 

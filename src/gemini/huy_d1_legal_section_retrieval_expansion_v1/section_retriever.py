@@ -12,6 +12,7 @@ Reuses audited Huy lexical retrieval architecture:
 - Addition budget: section_hit_depth=128, cap=8 additions outside baseline pool
 """
 
+import json
 import math
 import os
 import re
@@ -22,8 +23,45 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .common import sha256_file
+from .common import RES_DIR, ROOT, SRC_DIR, get_git_status, sha256_file
 from .legal_section_parser import LegalSection, parse_document_into_sections
+
+
+def build_index_manifest(
+    index_stats: Dict[str, Any],
+    corpus_fingerprint: str,
+    output_path: Path,
+    dataset_name: str,
+    max_chunk_words: int = 220,
+    overlap_words: int = 60,
+) -> Dict[str, Any]:
+    """Generate authoritative index provenance manifest."""
+    git_info = get_git_status()
+    parser_path = SRC_DIR / "legal_section_parser.py"
+    retriever_path = SRC_DIR / "section_retriever.py"
+    db_p = Path(index_stats["db_path"])
+    rel_db_path = str(db_p.relative_to(ROOT)) if db_p.is_absolute() and db_p.is_relative_to(ROOT) else str(db_p)
+
+    manifest = {
+        "schema_version": "dsc2026.gemini.huy_d1_legal_section_retrieval_expansion_v1.section_index_provenance.v1",
+        "experiment_id": "HUY_D1_LEGAL_SECTION_RETRIEVAL_EXPANSION_V1",
+        "dataset": dataset_name,
+        "git_commit_sha": git_info["head_commit"],
+        "parser_source_sha256": sha256_file(parser_path),
+        "section_retriever_source_sha256": sha256_file(retriever_path),
+        "corpus_fingerprint": corpus_fingerprint,
+        "documents_indexed": index_stats["documents_indexed"],
+        "sections_indexed": index_stats["sections_indexed"],
+        "max_chunk_words": max_chunk_words,
+        "overlap_words": overlap_words,
+        "db_path": rel_db_path,
+        "db_size_bytes": index_stats["size_bytes"],
+        "db_sha256": index_stats["sha256"],
+        "built_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    return manifest
 
 # Huy\'s exact token regex from burst_retriever.py
 TOKEN_RE = re.compile(r"\w+", re.UNICODE)

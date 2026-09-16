@@ -17,7 +17,12 @@ from .common import (
     EXPECTED_V2_BASE_CANDIDATE_RECALL,
     RES_DIR,
     ROOT,
+    SRC_DIR,
+    compute_candidate_fingerprint,
+    compute_corpus_fingerprint,
+    compute_query_fingerprint,
     get_git_status,
+    load_cal_corpus,
     load_cal_generation_inputs,
     load_cal_gold_labels,
     load_v2_generation_inputs,
@@ -26,33 +31,139 @@ from .common import (
 )
 
 
-def verify_seal(additions_path: Path, seal_path: Path) -> None:
+def verify_seal(
+    dataset_name: str,
+    additions_path: Path,
+    seal_path: Path,
+    db_path: Path,
+    prov_path: Path,
+    expected_query_fp: str,
+    expected_cand_fp: str,
+    expected_corpus_fp: str,
+) -> Dict[str, Any]:
+    """Strictly verify the full provenance contract before gold labels are opened.
+    Raises RuntimeError('BLOCKED_ADDITIONS_PROVENANCE: ...') if any check fails.
+    """
     if not additions_path.exists():
-        raise FileNotFoundError(f"Additions file not found: {additions_path}")
+        raise RuntimeError(f"BLOCKED_ADDITIONS_PROVENANCE: Additions file missing: {additions_path}")
     if not seal_path.exists():
-        raise FileNotFoundError(f"Seal file not found: {seal_path}")
+        raise RuntimeError(f"BLOCKED_ADDITIONS_PROVENANCE: Seal file missing: {seal_path}")
+    if not db_path.exists():
+        raise RuntimeError(f"BLOCKED_ADDITIONS_PROVENANCE: Index DB file missing: {db_path}")
+    if not prov_path.exists():
+        raise RuntimeError(f"BLOCKED_ADDITIONS_PROVENANCE: Index provenance manifest missing: {prov_path}")
 
-    seal = json.loads(seal_path.read_text(encoding="utf-8"))
-    expected_sha = seal["generated_additions_artifact_sha256"]
-    actual_sha = sha256_file(additions_path)
+    try:
+        seal = json.loads(seal_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise RuntimeError(f"BLOCKED_ADDITIONS_PROVENANCE: Corrupted seal JSON: {e}")
 
-    if expected_sha != actual_sha:
-        raise ValueError(
-            f"ANTI-CONTAMINATION VIOLATION: Additions file {additions_path.name} SHA256 mismatch!\n"
-            f"Expected from seal: {expected_sha}\n"
-            f"Actual file sha256: {actual_sha}"
+    if seal.get("dataset") != dataset_name:
+        raise RuntimeError(
+            f"BLOCKED_ADDITIONS_PROVENANCE: Seal dataset mismatch! Expected {dataset_name}, got {seal.get('dataset')}"
         )
-    print(f"[EVAL] Seal verified for {additions_path.name} (SHA256: {actual_sha[:12]}...)", flush=True)
+
+    actual_add_sha = sha256_file(additions_path)
+    if seal.get("generated_additions_artifact_sha256") != actual_add_sha:
+        raise RuntimeError(
+            f"BLOCKED_ADDITIONS_PROVENANCE: Additions file {additions_path.name} SHA256 mismatch!\n"
+            f"Expected from seal: {seal.get('generated_additions_artifact_sha256')}\n"
+            f"Actual file sha256: {actual_add_sha}"
+        )
+
+    git_info = get_git_status()
+    if seal.get("git_commit_sha") != git_info["head_commit"]:
+        raise RuntimeError(
+            f"BLOCKED_ADDITIONS_PROVENANCE: Git commit SHA mismatch!\n"
+            f"Expected from seal: {seal.get('git_commit_sha')}\n"
+            f"Current HEAD commit: {git_info['head_commit']}"
+        )
+
+    src_hashes = {
+        "candidate_generator": (SRC_DIR / "candidate_generator.py", seal.get("candidate_generator_source_sha256")),
+        "section_retriever": (SRC_DIR / "section_retriever.py", seal.get("section_retriever_source_sha256")),
+        "legal_section_parser": (SRC_DIR / "legal_section_parser.py", seal.get("legal_section_parser_source_sha256")),
+    }
+    for name, (src_file, expected_h) in src_hashes.items():
+        actual_h = sha256_file(src_file)
+        if actual_h != expected_h:
+            raise RuntimeError(
+                f"BLOCKED_ADDITIONS_PROVENANCE: Source hash mismatch for {name} ({src_file.name})!\n"
+                f"Expected from seal: {expected_h}\n"
+                f"Actual file sha256: {actual_h}"
+            )
+
+    if seal.get("query_fingerprint") != expected_query_fp:
+        raise RuntimeError(
+            f"BLOCKED_ADDITIONS_PROVENANCE: Query fingerprint mismatch on {dataset_name}!\n"
+            f"Expected from seal: {seal.get('query_fingerprint')}\n"
+            f"Actual input fp:    {expected_query_fp}"
+        )
+    if seal.get("baseline_candidate_pool_fingerprint") != expected_cand_fp:
+        raise RuntimeError(
+            f"BLOCKED_ADDITIONS_PROVENANCE: Candidate pool fingerprint mismatch on {dataset_name}!\n"
+            f"Expected from seal: {seal.get('baseline_candidate_pool_fingerprint')}\n"
+            f"Actual input fp:    {expected_cand_fp}"
+        )
+    if seal.get("corpus_fingerprint") != expected_corpus_fp:
+        raise RuntimeError(
+            f"BLOCKED_ADDITIONS_PROVENANCE: Corpus fingerprint mismatch on {dataset_name}!\n"
+            f"Expected from seal: {seal.get('corpus_fingerprint')}\n"
+            f"Actual corpus fp:   {expected_corpus_fp}"
+        )
+
+    actual_db_sha = sha256_file(db_path)
+    if seal.get("section_index_sha256") != actual_db_sha:
+        raise RuntimeError(
+            f"BLOCKED_ADDITIONS_PROVENANCE: Index DB SHA256 mismatch on {dataset_name}!\n"
+            f"Expected from seal: {seal.get('section_index_sha256')}\n"
+            f"Actual file sha256: {actual_db_sha}"
+        )
+    actual_prov_sha = sha256_file(prov_path)
+    if seal.get("section_index_provenance_sha256") != actual_prov_sha:
+        raise RuntimeError(
+            f"BLOCKED_ADDITIONS_PROVENANCE: Index provenance SHA256 mismatch on {dataset_name}!\n"
+            f"Expected from seal: {seal.get('section_index_provenance_sha256')}\n"
+            f"Actual file sha256: {actual_prov_sha}"
+        )
+
+    if seal.get("cap") != 8 or seal.get("section_hit_depth") != 128:
+        raise RuntimeError(
+            f"BLOCKED_ADDITIONS_PROVENANCE: Budget mismatch on {dataset_name}: "
+            f"cap={seal.get('cap')}, depth={seal.get('section_hit_depth')}"
+        )
+
+    print(f"[EVAL] Pre-gold full provenance contract VERIFIED for {dataset_name} ({additions_path.name})", flush=True)
+    return seal
 
 
 def evaluate_cal_expansion() -> Dict[str, Any]:
     print("[EVAL] Evaluating CAL600 expansion...", flush=True)
     additions_file = RES_DIR / "CAL_SECTION_RETRIEVAL_ADDITIONS.jsonl"
     seal_file = RES_DIR / "CAL_SECTION_RETRIEVAL_ADDITIONS_SEAL.json"
+    db_file = RES_DIR / "indexes/cal_sections.db"
+    prov_file = RES_DIR / "CAL_SECTION_INDEX_PROVENANCE.json"
 
-    verify_seal(additions_file, seal_file)
-
+    # 1. Load generation inputs and corpus STRICTLY WITHOUT GOLD LABELS
+    corpus = load_cal_corpus()
     query_texts, blocks, all_ids, extended = load_cal_generation_inputs()
+    cand_fp = compute_candidate_fingerprint(all_ids, extended)
+    query_fp = compute_query_fingerprint(all_ids, query_texts)
+    corpus_fp = compute_corpus_fingerprint(corpus)
+
+    # 2. Hard-gate verification of seal before gold labels are opened
+    verify_seal(
+        dataset_name="CAL600",
+        additions_path=additions_file,
+        seal_path=seal_file,
+        db_path=db_file,
+        prov_path=prov_file,
+        expected_query_fp=query_fp,
+        expected_cand_fp=cand_fp,
+        expected_corpus_fp=corpus_fp,
+    )
+
+    # 3. Gold labels opened ONLY AFTER full provenance contract verified
     gold_labels = load_cal_gold_labels(all_ids)
 
     # Load additions
@@ -216,10 +327,28 @@ def evaluate_v2_expansion() -> Dict[str, Any]:
     print("[EVAL] Evaluating Strict-V2 expansion...", flush=True)
     additions_file = RES_DIR / "V2_SECTION_RETRIEVAL_ADDITIONS.jsonl"
     seal_file = RES_DIR / "V2_SECTION_RETRIEVAL_ADDITIONS_SEAL.json"
+    db_file = RES_DIR / "indexes/v2_sections.db"
+    prov_file = RES_DIR / "V2_SECTION_INDEX_PROVENANCE.json"
 
-    verify_seal(additions_file, seal_file)
-
+    # 1. Load V2 generation inputs and corpus STRICTLY WITHOUT GOLD LABELS
     corpus, queries, v2_qids, candidate_pools = load_v2_generation_inputs()
+    v2_cand_fp = compute_candidate_fingerprint(v2_qids, candidate_pools)
+    v2_query_fp = compute_query_fingerprint(v2_qids, queries)
+    v2_corpus_fp = compute_corpus_fingerprint(corpus)
+
+    # 2. Hard-gate verification of seal before gold labels are opened
+    verify_seal(
+        dataset_name="Strict-V2",
+        additions_path=additions_file,
+        seal_path=seal_file,
+        db_path=db_file,
+        prov_path=prov_file,
+        expected_query_fp=v2_query_fp,
+        expected_cand_fp=v2_cand_fp,
+        expected_corpus_fp=v2_corpus_fp,
+    )
+
+    # 3. Gold labels opened ONLY AFTER full provenance contract verified
     gold_labels = load_v2_gold_labels(v2_qids)
 
     additions_by_qid: Dict[str, List[Dict[str, Any]]] = {}
@@ -231,8 +360,8 @@ def evaluate_v2_expansion() -> Dict[str, Any]:
 
     base_recalls = []
     exp_recalls = []
-    recovered_count = 0
-    lost_count = 0
+    recovered_cases = []
+    lost_cases = []
     addition_counts = []
     total_recovered_gold = 0
 
@@ -252,10 +381,28 @@ def evaluate_v2_expansion() -> Dict[str, Any]:
 
         delta = e_rec - b_rec
         if delta > 1e-9:
-            recovered_count += 1
-            total_recovered_gold += len((g & a_cands) - b_cands)
+            rec_gold = (g & a_cands) - b_cands
+            total_recovered_gold += len(rec_gold)
+            rec_info = []
+            for d in sorted(rec_gold):
+                cand_meta = next((c for c in adds if c["doc_id"] == d), None)
+                rec_info.append(cand_meta or {"doc_id": d})
+
+            recovered_cases.append({
+                "qid": qid,
+                "query_text": queries[qid],
+                "gold_labels": sorted(list(g)),
+                "baseline_gold_found": sorted(list(g & b_cands)),
+                "recovered_gold_docs": sorted(list(rec_gold)),
+                "recovered_doc_details": rec_info,
+                "baseline_recall": b_rec,
+                "expanded_recall": e_rec,
+                "delta": delta,
+                "baseline_pool_size": len(b_cands),
+                "additions_count": len(adds),
+            })
         elif delta < -1e-9:
-            lost_count += 1
+            lost_cases.append({"qid": qid, "baseline_recall": b_rec, "expanded_recall": e_rec})
 
     macro_base = sum(base_recalls) / len(base_recalls)
     macro_exp = sum(exp_recalls) / len(exp_recalls)
@@ -270,8 +417,8 @@ def evaluate_v2_expansion() -> Dict[str, Any]:
         "expanded_candidate_recall": macro_exp,
         "delta_recall": delta_v2,
         "query_count": len(v2_qids),
-        "recovered_queries_count": recovered_count,
-        "lost_queries_count": lost_count,
+        "recovered_queries_count": len(recovered_cases),
+        "lost_queries_count": len(lost_cases),
         "total_recovered_gold_docs": total_recovered_gold,
         "total_additions": total_adds,
         "mean_additions_per_query": statistics.mean(addition_counts) if addition_counts else 0.0,
@@ -282,6 +429,11 @@ def evaluate_v2_expansion() -> Dict[str, Any]:
     out_res = RES_DIR / "V2_SECTION_RETRIEVAL_RESULTS.json"
     out_res.write_text(json.dumps(v2_results, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"[EVAL] V2 results saved -> {out_res}", flush=True)
+
+    # Save V2 forensic artifact
+    out_forensic = RES_DIR / "V2_RECOVERED_CASES_FORENSIC.json"
+    out_forensic.write_text(json.dumps(recovered_cases, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"[EVAL] V2 forensic saved -> {out_forensic} ({len(recovered_cases)} recovered cases)", flush=True)
 
     return v2_results
 
