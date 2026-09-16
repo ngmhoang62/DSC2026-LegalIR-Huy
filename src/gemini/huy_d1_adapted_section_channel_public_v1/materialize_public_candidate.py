@@ -51,7 +51,7 @@ from .common import (
     seed_everything,
     sha256_file,
 )
-from .legal_section_parser import parse_document_into_sections, preselect_legal_sections
+from .legal_section_parser import LegalSection, parse_document_into_sections, preselect_legal_sections
 from .score_cal_adapted_section_ce import CAL_ADAPTED_CACHE_PATH
 
 PUB_ADAPTED_CACHE_PATH = RESULTS_DIR / "adapted_section_ce_public.pkl"
@@ -394,9 +394,22 @@ def run_public_stage() -> Dict[str, Any]:
             cands = public_candidates[qid]
             for did in cands:
                 if did not in pub_doc_sections_cache:
-                    pub_doc_sections_cache[did] = parse_document_into_sections(
-                        did, docs_store[did], max_chunk_words=220, overlap_words=60
+                    pub_d_text = docs_store[did]
+                    secs = parse_document_into_sections(
+                        did, pub_d_text, max_chunk_words=220, overlap_words=60
                     )
+                    if not secs:
+                        secs = [
+                            LegalSection(
+                                doc_id=did,
+                                section_index=0,
+                                section_type="FALLBACK_ID",
+                                heading=did,
+                                text=did,
+                                word_count=1,
+                            )
+                        ]
+                    pub_doc_sections_cache[did] = secs
                 secs = pub_doc_sections_cache[did]
                 chosen_secs = preselect_legal_sections(q_text, secs, count=2)
                 for s_idx, sec in enumerate(chosen_secs):

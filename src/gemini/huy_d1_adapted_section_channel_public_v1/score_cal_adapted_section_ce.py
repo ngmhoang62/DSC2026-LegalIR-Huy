@@ -23,7 +23,7 @@ from .common import (
     seed_everything,
     sha256_file,
 )
-from .legal_section_parser import parse_document_into_sections, preselect_legal_sections
+from .legal_section_parser import LegalSection, parse_document_into_sections, preselect_legal_sections
 
 CAL_ADAPTED_CACHE_PATH = RESULTS_DIR / "adapted_section_ce_cal.pkl"
 CAL_ADAPTED_MANIFEST_PATH = RESULTS_DIR / "adapted_section_ce_cal_manifest.json"
@@ -90,9 +90,22 @@ def score_cal_adapted_section_ce(
         total_candidate_pairs += len(cands)
         for did in cands:
             if did not in doc_sections_cache:
-                doc_sections_cache[did] = parse_document_into_sections(
-                    did, docs[did], max_chunk_words=220, overlap_words=60
+                d_text = docs[did]
+                secs = parse_document_into_sections(
+                    did, d_text, max_chunk_words=220, overlap_words=60
                 )
+                if not secs:
+                    secs = [
+                        LegalSection(
+                            doc_id=did,
+                            section_index=0,
+                            section_type="FALLBACK_ID",
+                            heading=did,
+                            text=did,
+                            word_count=1,
+                        )
+                    ]
+                doc_sections_cache[did] = secs
             secs = doc_sections_cache[did]
             chosen_secs = preselect_legal_sections(q_text, secs, count=2)
             for s_idx, sec in enumerate(chosen_secs):

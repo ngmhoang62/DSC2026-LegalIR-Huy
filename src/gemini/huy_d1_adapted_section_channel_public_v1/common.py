@@ -153,7 +153,8 @@ class SafeDocumentStore:
             if path is None:
                 return ""
             row = json.loads(path.read_text(encoding="utf-8"))
-            text = row.get("passage") or ""
+            from run_burst_expanded_fusion_submission import title_from_link
+            text = row.get("passage") or title_from_link(row.get("link")) or ""
             if len(self.cache) >= self.cache_size:
                 self.cache.clear()
             self.cache[doc] = text
