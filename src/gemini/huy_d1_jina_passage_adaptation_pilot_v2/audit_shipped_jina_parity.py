@@ -20,8 +20,9 @@ from .common import (
     ROOT,
     WEIGHTS_JINA_FT,
     get_git_status,
+    load_cal_candidate_pools,
     load_cal_contexts,
-    load_cal_inputs_label_free,
+    load_cal_questions_label_free,
     load_jina_base_with_shipped_weights,
     seed_everything,
     sha256_file,
@@ -57,7 +58,8 @@ def run_shipped_jina_parity(sample_size: int = 32) -> Dict[str, Any]:
     cached_scores: Dict[str, Dict[str, float]] = cached_data["scores"]
 
     contexts = load_cal_contexts()
-    queries, all_ids, extended = load_cal_inputs_label_free()
+    all_ids, queries = load_cal_questions_label_free()
+    extended = load_cal_candidate_pools()
 
     sample_qids = all_ids[:sample_size]
     max_score_diff = 0.0
