@@ -320,6 +320,8 @@ def run_report_consistency_audit() -> Dict[str, Any]:
     missing_artifacts = []
     artifacts_found = {}
     for af in EXPECTED_ARTIFACTS:
+        if af == "REPORT_CONSISTENCY_AUDIT.json":
+            continue
         p = RES_DIR / af
         if not p.exists():
             missing_artifacts.append(af)
