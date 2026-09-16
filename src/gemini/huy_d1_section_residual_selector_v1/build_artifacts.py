@@ -81,7 +81,7 @@ def build_authoritative_artifacts(
 
     # 2. Save STACKING_INTEGRITY_AUDIT.json
     stack_path = RES_DIR / "STACKING_INTEGRITY_AUDIT.json"
-    stack_path.write_text(json.dumps(stack_doc, indent=2, ensure_ascii=False), encoding="utf-8")
+    stack_path.write_text(json.dumps(stacking_doc, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Saved {stack_path}", flush=True)
 
     # 3. Save SELECTOR_TRAINING_AUDIT.json
