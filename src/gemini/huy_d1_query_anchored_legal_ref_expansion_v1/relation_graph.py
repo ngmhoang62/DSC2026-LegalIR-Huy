@@ -38,12 +38,13 @@ def build_explicit_relation_graph(
     corpus: Dict[str, Dict[str, Any]],
     ref_to_docs: Dict[str, List[str]],
     doc_to_own_ref: Dict[str, str],
+    audit_filename: str = "EXPLICIT_RELATION_GRAPH_AUDIT.json",
 ) -> Tuple[
     Dict[str, List[Tuple[str, str, bool, str]]],
     Dict[str, List[Tuple[str, str, bool, str]]],
     dict,
 ]:
-    print("=== BUILDING EXPLICIT LEGAL RELATION GRAPH ===", flush=True)
+    print(f"=== BUILDING EXPLICIT LEGAL RELATION GRAPH ({audit_filename}) ===", flush=True)
     RES_DIR.mkdir(parents=True, exist_ok=True)
 
     out_edges: Dict[str, List[Tuple[str, str, bool, str]]] = defaultdict(list)
@@ -134,7 +135,7 @@ def build_explicit_relation_graph(
         "sample_edges": edge_records[:20],
     }
 
-    out_path = RES_DIR / "EXPLICIT_RELATION_GRAPH_AUDIT.json"
+    out_path = RES_DIR / audit_filename
     out_path.write_text(json.dumps(audit_doc, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Saved {out_path}", flush=True)
     print("=== EXPLICIT RELATION GRAPH AUDIT PASSED ===\n", flush=True)

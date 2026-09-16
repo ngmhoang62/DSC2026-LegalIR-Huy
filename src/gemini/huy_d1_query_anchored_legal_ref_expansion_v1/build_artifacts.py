@@ -101,6 +101,8 @@ def build_authoritative_artifacts(
             or (verdict in ["KEEP_QUERY_ANCHORED_LEGAL_REF_EXPANSION", "GENERALIZATION_CONFIRMED_LEGAL_REF_EXPANSION"] and (rec_count >= 2 and macro_gain >= 0.002))
         ),
         "source_files_count_matches": len(source_files) == 9,
+        "baseline_candidate_fingerprint_verified": cand_fp == "24864c27298b8f48d96b3ddc60c521a5c8c88c84b5e9ca1dbbd5ffbf5e8b595a",
+        "git_origin_parity_verified": git_info.get("parity") is True,
     }
     consistency_pass = all(consistency_checks.values())
     consistency_doc = {

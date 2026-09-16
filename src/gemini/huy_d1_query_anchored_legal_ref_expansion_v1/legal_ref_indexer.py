@@ -79,11 +79,14 @@ def extract_doc_own_reference(passage: str, link: str) -> Optional[str]:
     return None
 
 
-def build_legal_reference_index(corpus: Dict[str, Dict[str, Any]]) -> Tuple[
+def build_legal_reference_index(
+    corpus: Dict[str, Dict[str, Any]],
+    audit_filename: str = "LEGAL_REFERENCE_INDEX_AUDIT.json",
+) -> Tuple[
     Dict[str, List[str]], Dict[str, str], dict
 ]:
     """Build canonical legal reference index mapping canonical reference -> List[doc_ids]."""
-    print("=== BUILDING LEGAL REFERENCE INDEX ===", flush=True)
+    print(f"=== BUILDING LEGAL REFERENCE INDEX ({audit_filename}) ===", flush=True)
     RES_DIR.mkdir(parents=True, exist_ok=True)
 
     ref_to_docs: Dict[str, List[str]] = defaultdict(list)
@@ -127,7 +130,7 @@ def build_legal_reference_index(corpus: Dict[str, Dict[str, Any]]) -> Tuple[
         },
     }
 
-    out_path = RES_DIR / "LEGAL_REFERENCE_INDEX_AUDIT.json"
+    out_path = RES_DIR / audit_filename
     out_path.write_text(json.dumps(audit_doc, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Saved {out_path}", flush=True)
     print("=== LEGAL REFERENCE INDEX AUDIT PASSED ===\n", flush=True)

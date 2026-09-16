@@ -244,10 +244,14 @@ def evaluate_v2_shadow_generalization() -> dict:
     print(f"Loaded V2 Data: {len(v2_corpus)} docs, {len(v2_queries)} queries, {len(v2_pools)} candidate pools", flush=True)
 
     # 1. Build legal reference index on V2 corpus
-    ref_to_docs_v2, doc_to_own_ref_v2, _ = build_legal_reference_index(v2_corpus)
+    ref_to_docs_v2, doc_to_own_ref_v2, _ = build_legal_reference_index(
+        v2_corpus, audit_filename="V2_LEGAL_REFERENCE_INDEX_AUDIT.json"
+    )
 
     # 2. Build relation graph on V2 corpus
-    out_edges_v2, in_edges_v2, _ = build_explicit_relation_graph(v2_corpus, ref_to_docs_v2, doc_to_own_ref_v2)
+    out_edges_v2, in_edges_v2, _ = build_explicit_relation_graph(
+        v2_corpus, ref_to_docs_v2, doc_to_own_ref_v2, audit_filename="V2_EXPLICIT_RELATION_GRAPH_AUDIT.json"
+    )
 
     # 3. Run generator on all V2 queries
     v2_qids = sorted(v2_queries.keys(), key=lambda x: int(x) if x.isdigit() else x)
