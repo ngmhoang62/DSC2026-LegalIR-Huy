@@ -135,9 +135,10 @@ def build_explicit_relation_graph(
         "sample_edges": edge_records[:20],
     }
 
-    out_path = RES_DIR / audit_filename
-    out_path.write_text(json.dumps(audit_doc, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Saved {out_path}", flush=True)
+    if audit_filename:
+        out_path = RES_DIR / audit_filename
+        out_path.write_text(json.dumps(audit_doc, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"Saved {out_path}", flush=True)
     print("=== EXPLICIT RELATION GRAPH AUDIT PASSED ===\n", flush=True)
 
     return dict(out_edges), dict(in_edges), audit_doc

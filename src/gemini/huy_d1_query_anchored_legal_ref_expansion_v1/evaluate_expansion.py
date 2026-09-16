@@ -15,31 +15,32 @@ if str(ROOT) not in sys.path:
 
 from src.gemini.huy_d1_query_anchored_legal_ref_expansion_v1.common import (
     RES_DIR,
-    load_cal_data,
-    load_v2_data,
-)
-from src.gemini.huy_d1_query_anchored_legal_ref_expansion_v1.legal_ref_indexer import (
-    build_legal_reference_index,
-)
-from src.gemini.huy_d1_query_anchored_legal_ref_expansion_v1.query_anchored_generator import (
-    generate_query_additions,
-)
-from src.gemini.huy_d1_query_anchored_legal_ref_expansion_v1.relation_graph import (
-    build_explicit_relation_graph,
+    sha256_file,
 )
 
 
 def evaluate_cal_expansion(
-    queries: Dict[str, Any],
+    query_texts: Dict[str, Any],
     blocks: Dict[str, List[str]],
     all_ids: List[str],
     extended: Dict[str, List[str]],
     gold: Dict[str, Set[str]],
     cal_additions: Dict[str, List[str]],
     jsonl_records: List[dict],
+    seal_doc: dict,
 ) -> Tuple[dict, dict]:
-    print("=== EVALUATING CAL CANDIDATE EXPANSION COVERAGE ===", flush=True)
+    print("=== EVALUATING CAL CANDIDATE EXPANSION COVERAGE (POST-SEAL) ===", flush=True)
     RES_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 1. Anti-contamination and seal verification
+    jsonl_path = RES_DIR / "CAL_PER_QUERY_EXPANSION.jsonl"
+    current_art_sha = sha256_file(jsonl_path)
+    sealed_sha = seal_doc.get("generated_additions_artifact_sha256")
+    if current_art_sha != sealed_sha:
+        raise RuntimeError(
+            f"Additions artifact seal mismatch! Current: {current_art_sha}, Sealed: {sealed_sha}"
+        )
+    print(f"Additions Seal Verified: {current_art_sha[:16]}... matches seal.", flush=True)
 
     qid_to_record = {r["qid"]: r for r in jsonl_records}
 
@@ -76,9 +77,12 @@ def evaluate_cal_expansion(
                 elif rec_src == "RELATION_NEIGHBOR":
                     relation_recoveries_count += 1
 
+                val = query_texts[q]
+                q_text = val[0] if isinstance(val, (list, tuple)) else val
+
                 recovered_outside_records.append({
                     "qid": q,
-                    "query_text": queries[q][0],
+                    "query_text": q_text,
                     "recovered_gold_doc_id": rec_doc,
                     "recovery_source": rec_src,
                     "anchor_ref": d_info.get("anchor_ref"),
@@ -223,38 +227,26 @@ def evaluate_cal_expansion(
     return cal_results_doc, noise_doc
 
 
-def evaluate_v2_shadow_generalization() -> dict:
-    print("=== EVALUATING STRICT-V2 SHADOW GENERALIZATION ===", flush=True)
+def evaluate_v2_expansion(
+    v2_qids: List[str],
+    candidate_pools: Dict[str, List[str]],
+    v2_additions: Dict[str, List[str]],
+    v2_gold: Dict[str, Set[str]],
+    seal_doc: dict,
+) -> dict:
+    print("=== EVALUATING STRICT-V2 SHADOW GENERALIZATION (POST-SEAL) ===", flush=True)
     RES_DIR.mkdir(parents=True, exist_ok=True)
 
-    v2_corpus, v2_queries, v2_gold, v2_pools = load_v2_data()
+    # 1. Anti-contamination and seal verification
+    jsonl_path = RES_DIR / "V2_PER_QUERY_EXPANSION.jsonl"
+    current_art_sha = sha256_file(jsonl_path)
+    sealed_sha = seal_doc.get("generated_additions_artifact_sha256")
+    if current_art_sha != sealed_sha:
+        raise RuntimeError(
+            f"V2 Additions artifact seal mismatch! Current: {current_art_sha}, Sealed: {sealed_sha}"
+        )
+    print(f"V2 Additions Seal Verified: {current_art_sha[:16]}... matches seal.", flush=True)
 
-    if not v2_corpus or not v2_queries or not v2_pools:
-        print("Strict-V2 data missing or unprovenanced! Setting V2_SHADOW_UNAVAILABLE.", flush=True)
-        v2_doc = {
-            "schema_version": "dsc2026.gemini.huy_d1_query_anchored_legal_ref_expansion_v1.v2_shadow.v1",
-            "experiment_id": "HUY_D1_QUERY_ANCHORED_LEGAL_REF_EXPANSION_V1",
-            "status": "V2_SHADOW_UNAVAILABLE",
-            "reason": "Corpus, queries, or candidate pool files missing.",
-        }
-        out_path = RES_DIR / "V2_SHADOW_EXPANSION_RESULTS.json"
-        out_path.write_text(json.dumps(v2_doc, indent=2, ensure_ascii=False), encoding="utf-8")
-        return v2_doc
-
-    print(f"Loaded V2 Data: {len(v2_corpus)} docs, {len(v2_queries)} queries, {len(v2_pools)} candidate pools", flush=True)
-
-    # 1. Build legal reference index on V2 corpus
-    ref_to_docs_v2, doc_to_own_ref_v2, _ = build_legal_reference_index(
-        v2_corpus, audit_filename="V2_LEGAL_REFERENCE_INDEX_AUDIT.json"
-    )
-
-    # 2. Build relation graph on V2 corpus
-    out_edges_v2, in_edges_v2, _ = build_explicit_relation_graph(
-        v2_corpus, ref_to_docs_v2, doc_to_own_ref_v2, audit_filename="V2_EXPLICIT_RELATION_GRAPH_AUDIT.json"
-    )
-
-    # 3. Run generator on all V2 queries
-    v2_qids = sorted(v2_queries.keys(), key=lambda x: int(x) if x.isdigit() else x)
     v2_orig_recalls = []
     v2_exp_recalls = []
     v2_recovered_outside = 0
@@ -263,20 +255,11 @@ def evaluate_v2_shadow_generalization() -> dict:
     v2_total_additions = 0
 
     for q in v2_qids:
-        q_text = v2_queries[q]
-        orig_pool = set(v2_pools[q])
+        orig_pool = set(candidate_pools[q])
+        adds = v2_additions.get(q, [])
+        exp_pool = orig_pool | set(adds)
         g = v2_gold[q]
 
-        adds, details, _ = generate_query_additions(
-            query_text=q_text,
-            existing_pool=orig_pool,
-            ref_to_docs=ref_to_docs_v2,
-            out_edges=out_edges_v2,
-            in_edges=in_edges_v2,
-            cap=8,
-        )
-
-        exp_pool = orig_pool | set(adds)
         if adds:
             v2_triggered_count += 1
             v2_total_additions += len(adds)

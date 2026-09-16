@@ -14,7 +14,7 @@ from src.gemini.huy_d1_query_anchored_legal_ref_expansion_v1.common import (
     RES_DIR,
     compute_candidate_fingerprint,
     compute_query_fingerprint,
-    load_cal_data,
+    load_cal_generation_inputs,
 )
 
 EXPECTED_CANDIDATE_FINGERPRINT = "24864c27298b8f48d96b3ddc60c521a5c8c88c84b5e9ca1dbbd5ffbf5e8b595a"
@@ -25,10 +25,10 @@ def run_candidate_pool_audit() -> dict:
     print("=== AUDIT 0: CANDIDATE POOL FINGERPRINT AUDIT ===", flush=True)
     RES_DIR.mkdir(parents=True, exist_ok=True)
 
-    queries, blocks, all_ids, extended, gold = load_cal_data()
+    query_texts, blocks, all_ids, extended = load_cal_generation_inputs()
 
     cand_fp = compute_candidate_fingerprint(all_ids, extended)
-    query_fp = compute_query_fingerprint(all_ids, queries)
+    query_fp = compute_query_fingerprint(all_ids, query_texts)
     total_pairs = sum(len(extended[q]) for q in all_ids)
 
     cand_pass = (cand_fp == EXPECTED_CANDIDATE_FINGERPRINT)

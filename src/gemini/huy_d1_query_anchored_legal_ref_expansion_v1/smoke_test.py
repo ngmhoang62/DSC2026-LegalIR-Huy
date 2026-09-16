@@ -56,13 +56,13 @@ def run_synthetic_smoke_test() -> dict:
     ref202 = extract_doc_own_reference(synthetic_corpus["202"]["passage"], synthetic_corpus["202"]["link"])
     assert ref202 == "20/2021/NĐ-TEST", f"Expected 20/2021/NĐ-TEST, got {ref202}"
 
-    # Build reference index
-    ref_to_docs, doc_to_own_ref, _ = build_legal_reference_index(synthetic_corpus)
+    # Build reference index (no audit file written during smoke test)
+    ref_to_docs, doc_to_own_ref, _ = build_legal_reference_index(synthetic_corpus, audit_filename=None)
     assert "10/2023/TT-TEST" in ref_to_docs
     assert "20/2021/NĐ-TEST" in ref_to_docs
 
-    # Build relation graph
-    out_edges, in_edges, _ = build_explicit_relation_graph(synthetic_corpus, ref_to_docs, doc_to_own_ref)
+    # Build relation graph (no audit file written during smoke test)
+    out_edges, in_edges, _ = build_explicit_relation_graph(synthetic_corpus, ref_to_docs, doc_to_own_ref, audit_filename=None)
     # Doc 101 should amend Doc 202
     assert any(target == "202" for target, rel, is_h, _ in out_edges.get("101", [])), "Doc 101 should amend Doc 202"
     # Doc 303 should guide Doc 202

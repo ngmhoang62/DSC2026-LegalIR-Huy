@@ -9,7 +9,7 @@ import random
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -25,12 +25,18 @@ if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
 RES_DIR = ROOT / "results/gemini/huy_d1_query_anchored_legal_ref_expansion_v1"
 SRC_DIR = ROOT / "src/gemini/huy_d1_query_anchored_legal_ref_expansion_v1"
 
+# CAL Paths & Constants
 CAL_CONTEXTS_DIR = ROOT / "DSC2026-LegalIR-main/v4_run/public_test_dataset/selected-contexts"
 EXPECTED_CAL_DOCS_COUNT = 8532
+EXPECTED_CAL_QUERIES_COUNT = 600
+EXPECTED_CAL_CANDIDATE_PAIRS = 23532
 
-V2_CONTEXTS_JSONL = ROOT / "cache/research_v2_forensic/kaggle_input/research-v2-jina-boundary-v2/V2_CONTEXTS.jsonl"
-V2_QUERIES_JSONL = ROOT / "cache/research_v2_e5_confirmation/bundle-v1/V2_TRANSFER_QUERIES.jsonl"
-V2_CANDIDATE_POOL_JSONL = ROOT / "cache/research_v2_e5_confirmation/bundle-v1/V2_CANDIDATE_POOL.jsonl"
+# Canonical V2 Paths
+CANONICAL_V2_CONTEXTS_JSONL = ROOT / "cache/research_v2_forensic/kaggle_input/research-v2-jina-boundary-v4/V2_CONTEXTS.jsonl"
+BOUNDARY_V2_CONTEXTS_JSONL = ROOT / "cache/research_v2_forensic/kaggle_input/research-v2-jina-boundary-v2/V2_CONTEXTS.jsonl"
+CANONICAL_V2_QUERIES_JSONL = ROOT / "cache/research_v2_e5_confirmation/bundle-v1/V2_TRANSFER_QUERIES.jsonl"
+CANONICAL_V2_CANDIDATE_POOL_JSONL = ROOT / "results/research_v2_forensic/V2_CANDIDATE_POOL.jsonl"
+MIRROR_V2_CANDIDATE_POOL_JSONL = ROOT / "cache/research_v2_e5_confirmation/bundle-v1/V2_CANDIDATE_POOL.jsonl"
 EXPECTED_V2_DOCS_COUNT = 8507
 EXPECTED_V2_QUERIES_COUNT = 6991
 
@@ -43,20 +49,13 @@ def seed_everything(seed: int = 2026) -> None:
 
 
 def sha256_file(path: Path) -> str:
+    if not path.exists():
+        return "NOT_FOUND"
     h = hashlib.sha256()
     with open(path, "rb") as f:
         while chunk := f.read(65536):
             h.update(chunk)
     return h.hexdigest()
-
-
-def get_git_commit_sha() -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True
-        ).strip()
-    except Exception as e:
-        return f"UNKNOWN_{e}"
 
 
 def get_git_status() -> Dict[str, Any]:
@@ -99,11 +98,21 @@ def compute_candidate_fingerprint(
     return h.hexdigest()
 
 
-def compute_query_fingerprint(all_ids: List[str], queries: Dict[str, Any]) -> str:
+def compute_query_fingerprint(all_ids: List[str], query_texts: Dict[str, Any]) -> str:
     h = hashlib.sha256()
     for q in sorted(all_ids):
-        text = queries[q][0]
+        val = query_texts[q]
+        text = val[0] if isinstance(val, (list, tuple)) else val
         h.update(f"{q}:{text}\n".encode("utf-8"))
+    return h.hexdigest()
+
+
+def compute_corpus_fingerprint(corpus: Dict[str, Dict[str, Any]]) -> str:
+    h = hashlib.sha256()
+    for doc_id in sorted(corpus.keys(), key=lambda x: int(x) if x.isdigit() else x):
+        passage = corpus[doc_id].get("passage", "")
+        p_hash = hashlib.sha256(passage.encode("utf-8")).hexdigest()
+        h.update(f"{doc_id}:{p_hash}\n".encode("utf-8"))
     return h.hexdigest()
 
 
@@ -122,9 +131,15 @@ def load_cal_corpus() -> Dict[str, Dict[str, Any]]:
     return corpus
 
 
-def load_cal_data():
-    """Load CAL600 dataset and baseline candidate pools."""
-    queries, raw_blocks, all_ids, extended, local_views, base_scores = (
+def load_cal_generation_inputs() -> Tuple[Dict[str, str], Dict[str, List[str]], List[str], Dict[str, List[str]]]:
+    """Load CAL generation inputs strictly WITHOUT exposing gold labels.
+    Returns:
+        query_texts: Dict[qid, question_text]
+        blocks: Dict[block_name, list_of_qids]
+        all_ids: List[qid]
+        extended: Dict[qid, list_of_baseline_candidate_doc_ids]
+    """
+    raw_queries, raw_blocks, all_ids, extended, local_views, base_scores = (
         build_training_cap(
             ROOT,
             32,
@@ -133,16 +148,30 @@ def load_cal_data():
         )
     )
     blocks = {k.upper(): v for k, v in raw_blocks.items()}
-    gold = {q: set(queries[q][1]) for q in all_ids}
-    return queries, blocks, all_ids, extended, gold
+    # Extract ONLY query text (index 0). Gold labels (index 1) are strictly excluded!
+    query_texts = {q: raw_queries[q][0] for q in all_ids}
+    return query_texts, blocks, all_ids, extended
 
 
-def load_v2_data() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str], Dict[str, Set[str]], Dict[str, List[str]]]:
-    """Load strict-V2 corpus, queries, gold labels, and candidate pools."""
+def load_cal_gold_labels(all_ids: List[str]) -> Dict[str, Set[str]]:
+    """Load CAL gold labels strictly for post-generation evaluation."""
+    raw_queries, _, _, _, _, _ = (
+        build_training_cap(
+            ROOT,
+            32,
+            "results/corpus_index/holdout_extended_scores_cap32.pkl",
+            depth=20,
+        )
+    )
+    return {q: set(raw_queries[q][1]) for q in all_ids}
+
+
+def load_v2_generation_inputs() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str], List[str], Dict[str, List[str]]]:
+    """Load canonical V2 corpus, query texts, and candidate pools strictly WITHOUT exposing gold labels."""
     corpus: Dict[str, Dict[str, Any]] = {}
-    if V2_CONTEXTS_JSONL.exists():
-        with open(V2_CONTEXTS_JSONL, encoding="utf-8") as f:
-            for line in f:
+    with open(CANONICAL_V2_CONTEXTS_JSONL, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
                 row = json.loads(line)
                 corpus[str(row["doc_id"])] = {
                     "id": str(row["doc_id"]),
@@ -151,21 +180,31 @@ def load_v2_data() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str], Dict[str,
                 }
 
     queries: Dict[str, str] = {}
-    gold: Dict[str, Set[str]] = {}
-    if V2_QUERIES_JSONL.exists():
-        with open(V2_QUERIES_JSONL, encoding="utf-8") as f:
-            for line in f:
+    with open(CANONICAL_V2_QUERIES_JSONL, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
                 row = json.loads(line)
-                qid = str(row["qid"])
-                queries[qid] = row.get("question", "")
-                gold[qid] = set(str(d) for d in row.get("gold", []))
+                queries[str(row["qid"])] = row.get("question", "")
 
     candidate_pools: Dict[str, List[str]] = {}
-    if V2_CANDIDATE_POOL_JSONL.exists():
-        with open(V2_CANDIDATE_POOL_JSONL, encoding="utf-8") as f:
-            for line in f:
+    with open(CANONICAL_V2_CANDIDATE_POOL_JSONL, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                row = json.loads(line)
+                candidate_pools[str(row["qid"])] = [str(d) for d in row.get("doc_ids", [])]
+
+    v2_qids = sorted(queries.keys(), key=lambda x: int(x) if x.isdigit() else x)
+    return corpus, queries, v2_qids, candidate_pools
+
+
+def load_v2_gold_labels(qids: List[str]) -> Dict[str, Set[str]]:
+    """Load canonical V2 gold labels strictly for post-generation evaluation."""
+    gold: Dict[str, Set[str]] = {}
+    with open(CANONICAL_V2_QUERIES_JSONL, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
                 row = json.loads(line)
                 qid = str(row["qid"])
-                candidate_pools[qid] = [str(d) for d in row.get("doc_ids", [])]
-
-    return corpus, queries, gold, candidate_pools
+                if qid in qids:
+                    gold[qid] = set(str(d) for d in row.get("gold", []))
+    return gold

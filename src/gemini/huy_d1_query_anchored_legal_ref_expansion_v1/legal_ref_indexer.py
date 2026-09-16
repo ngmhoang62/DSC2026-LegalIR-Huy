@@ -130,9 +130,10 @@ def build_legal_reference_index(
         },
     }
 
-    out_path = RES_DIR / audit_filename
-    out_path.write_text(json.dumps(audit_doc, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Saved {out_path}", flush=True)
+    if audit_filename:
+        out_path = RES_DIR / audit_filename
+        out_path.write_text(json.dumps(audit_doc, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"Saved {out_path}", flush=True)
     print("=== LEGAL REFERENCE INDEX AUDIT PASSED ===\n", flush=True)
 
     return dict(ref_to_docs), doc_to_own_ref, audit_doc
