@@ -34,6 +34,7 @@ ADAPTER_DIR = UPSTREAM_RESULTS_DIR / "jina_passage_adapted_adapter"
 FROZEN_SECTION_CACHE_PATH = ROOT / "results" / "gemini" / "huy_d1_legal_section_evidence_v1" / "legal_section_ce_cv.pkl"
 D1_CHAMPION_ZIP_PATH = ROOT / "results" / "gemini" / "huy_vnlegal_rank_ablation_v1" / "CANDIDATE_D1_VNLEGAL_SCORE_ONLY.zip"
 D1_CHAMPION_JSON_PATH = ROOT / "results" / "gemini" / "huy_vnlegal_rank_ablation_v1" / "CANDIDATE_D1_VNLEGAL_SCORE_ONLY.json"
+CAL_QUESTIONS_LABEL_FREE_PATH = SOURCE_DIR / "CAL_QUESTIONS_LABEL_FREE.json"
 
 BASE_MODEL_PATH = ROOT / "models" / "jina-reranker-v2-base-multilingual"
 FINETUNED_WEIGHTS_PATH = ROOT / "models" / "from_drive" / "jina_finetuned" / "model.safetensors"
@@ -163,7 +164,7 @@ class SafeDocumentStore:
 
 def get_source_files_sha256() -> Dict[str, Dict[str, Any]]:
     source_files = {}
-    for f in sorted(SOURCE_DIR.glob("*.py")):
+    for f in sorted(list(SOURCE_DIR.glob("*.py")) + list(SOURCE_DIR.glob("*.json"))):
         source_files[f.name] = {
             "path": str(f.relative_to(ROOT)).replace("\\", "/"),
             "size_bytes": f.stat().st_size,
@@ -172,12 +173,46 @@ def get_source_files_sha256() -> Dict[str, Dict[str, Any]]:
     return source_files
 
 
+def load_retrieval_cache(root: Path, tag: str) -> Dict[str, Any]:
+    large = root / "results" / "burst_large_ltr"
+    if tag == "validation_a":
+        return pickle.loads(
+            (large / "retrieval_train1000_tune50_val100.pkl").read_bytes()
+        )["cache"]
+    return pickle.loads((large / f"{tag}_retrieval.pkl").read_bytes())["cache"]
+
+
+def raw_union_local(cache_row, depth: int = 50, rrf_k: int = 20) -> List[str]:
+    scores = {}
+    for branch in cache_row:
+        for rank, item in enumerate(branch[:depth], 1):
+            doc = str(item[0])
+            scores[doc] = scores.get(doc, 0.0) + 1.0 / (rrf_k + rank)
+    return sorted(scores, key=lambda d: (-scores[d], d))
+
+
+def weighted_rrf_local(rankings: List[Dict[str, List[str]]], weights: Tuple[float, float], k: int) -> Dict[str, List[str]]:
+    output = {}
+    for q in rankings[0]:
+        rankmaps = [{d: i + 1 for i, d in enumerate(branch[q])} for branch in rankings]
+        docs = set().union(*(r.keys() for r in rankmaps))
+        output[q] = sorted(
+            docs,
+            key=lambda d: (
+                -sum(w / (k + ranks.get(d, 100000)) for w, ranks in zip(weights, rankmaps)),
+                d,
+            ),
+        )[:100]
+    return output
+
+
 def load_cal_data_label_free():
     """Load CAL data without labels: docs, query text, blocks, qids, candidates, views, scores.
+    Uses strictly CAL_QUESTIONS_LABEL_FREE.json and frozen result caches.
     Strictly zero CAL gold labels are read, materialized, or returned.
+    Does NOT call load_queries, build_views, build_training_cap, or any label-dependent loader.
     """
     from tune_citation_graph import build_citation_table, citation_features
-    from tune_corpus_cap32_fusion import build_training_cap
     from tune_doctype_features import build_type_table, type_features
 
     docs = SafeDocumentStore(
@@ -188,18 +223,94 @@ def load_cal_data_label_free():
             ).glob("context_*.json")
         )
     )
-    raw_queries, raw_blocks, all_ids, extended, local_views, base_scores = (
-        build_training_cap(
-            ROOT,
-            32,
-            "results/corpus_index/holdout_extended_scores_cap32.pkl",
-            depth=20,
-        )
-    )
-    blocks = {k.upper(): v for k, v in raw_blocks.items()}
-    # Strictly strip all gold answers: queries_label_free only contains question text
-    queries_label_free = {q: (raw_queries[q][0], None) for q in all_ids}
-    del raw_queries
+
+    if not CAL_QUESTIONS_LABEL_FREE_PATH.exists():
+        raise FileNotFoundError(f"Missing label-free questions artifact: {CAL_QUESTIONS_LABEL_FREE_PATH}")
+
+    raw_q = json.loads(CAL_QUESTIONS_LABEL_FREE_PATH.read_text(encoding="utf-8"))
+    questions_map = {str(k): (v["question"] if isinstance(v, dict) else str(v)) for k, v in raw_q.items()}
+    all_ids = list(questions_map.keys())
+    if len(all_ids) != 600:
+        raise ValueError(f"Expected exactly 600 queries in label-free questions, got {len(all_ids)}")
+
+    blocks = {
+        "A": all_ids[:100],
+        "B": all_ids[100:200],
+        "C": all_ids[200:300],
+        "D": all_ids[300:600],
+    }
+    TAGS = {
+        "A": "validation_a",
+        "B": "fresh_1251_1350",
+        "C": "fresh_1351_1450",
+        "D": "fresh_1451_1750",
+    }
+
+    # queries_label_free strictly contains only question text, and gold set is None
+    queries_label_free = {q: (questions_map[q], None) for q in all_ids}
+
+    # Self-contained reconstruction of views and candidates from frozen caches
+    load = lambda p: pickle.loads((ROOT / p).read_bytes())
+
+    raw_cache = {}
+    for n, b in blocks.items():
+        c = load_retrieval_cache(ROOT, TAGS[n])
+        raw_cache.update({q: raw_union_local(c[q]) for q in b})
+
+    dense_expansion_scores = load("results/dense_expansion/union50_scores.pkl")["scores"]
+    dense_ranks = {q: sorted(raw_cache[q], key=lambda d: (-dense_expansion_scores[q][d], d)) for q in all_ids}
+    expanded_ranks = weighted_rrf_local([raw_cache, dense_ranks], (0.55, 0.45), 10)
+
+    old_jina = load("results/jina_reranker/holdout_scores_finetuned.pkl")["scores"]
+    old_dense = load("results/aiteamvn_dense/holdout_scores_512.pkl")["scores"]
+    old_e5 = load("results/e5_dense/holdout_scores.pkl")["scores"]
+    vi_rerank = load("results/vietnamese_reranker/holdout_scores_512_finetuned.pkl")["scores"]
+    expanded_scores = load("results/expanded_rerank/scores.pkl")
+
+    def rank_by(candidates_dict, scores_dict):
+        return {
+            q: sorted(candidates_dict[q], key=lambda d: (-scores_dict.get(q, {}).get(d, -1e9), d))
+            for q in candidates_dict
+        }
+
+    base_cands = {q: list(old_jina[q]) for q in all_ids}
+    views_cands = {q: list(dict.fromkeys(base_cands[q] + expanded_ranks[q][:20])) for q in all_ids}
+
+    views_rebuilt = {
+        "base": base_cands,
+        "expanded": {q: expanded_ranks[q][:20] for q in all_ids},
+        "raw": {q: raw_cache[q][:20] for q in all_ids},
+        "jina": rank_by(views_cands, expanded_scores["jina"]),
+        "dense": rank_by(views_cands, expanded_scores["dense"]),
+        "vi": rank_by(base_cands, vi_rerank),
+        "e5": rank_by(base_cands, old_e5),
+        "old_jina": rank_by(base_cands, old_jina),
+        "old_dense": rank_by(base_cands, old_dense),
+    }
+
+    dense_saved = load("results/corpus_index/holdout_dense_rank_cap32.pkl")
+    corpus_rank, corpus_score = dense_saved["ranking"], dense_saved["scores"]
+    extended_scores_cap = load("results/corpus_index/holdout_extended_scores_cap32.pkl")
+
+    extended = {q: list(dict.fromkeys(list(views_cands[q]) + corpus_rank[q][:20])) for q in all_ids}
+    local_views = dict(views_rebuilt)
+    for name, table in (("jina", extended_scores_cap["jina"]), ("dense", extended_scores_cap["dense"])):
+        local_views[name] = {
+            q: sorted(extended[q], key=lambda d: (-table[q].get(d, -1e9), d))
+            for q in all_ids
+        }
+    local_views["corpus"] = {
+        q: [d for d in corpus_rank[q] if d in set(extended[q])]
+        for q in all_ids
+    }
+
+    base_scores = {
+        "jina": extended_scores_cap["jina"],
+        "dense": extended_scores_cap["dense"],
+        "expansion": dense_expansion_scores,
+        "e5": old_e5,
+        "corpus": {q: {d: corpus_score[q].get(d, -1.0) for d in extended[q]} for q in all_ids},
+    }
 
     def load_aligned(rel_path: str, floor=None):
         raw = load_pkl(rel_path)

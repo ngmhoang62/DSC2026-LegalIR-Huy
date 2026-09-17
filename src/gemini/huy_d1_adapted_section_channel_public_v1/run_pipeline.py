@@ -58,23 +58,40 @@ def main():
     run_score_semantics_audit(sample_size_pairs=64)
     print("Stage 2 PASSED.", flush=True)
 
+    # Stage 3: Audit CAL Label-Free Loader & Call Graph Isolation
+    print("\n--- STAGE 3: CAL LABEL-FREE LOADER & CALL GRAPH ISOLATION AUDIT ---", flush=True)
+    from .audit_cal_label_free_loader import audit_cal_label_free_loader
+    loader_audit = audit_cal_label_free_loader()
+    if loader_audit.get("status") != "PASS":
+        raise RuntimeError("BLOCKED_CAL_LABEL_ISOLATION: Loader audit did not PASS!")
+    print("Stage 3 PASSED.", flush=True)
+
     # Preload CAL data strictly label-free (queries have question text only, zero gold)
-    print("\nLoading CAL data strictly label-free for pipeline...", flush=True)
+    print("\nLoading true CAL data strictly label-free for pipeline...", flush=True)
     cal_data_label_free = load_cal_data_label_free()
     all_ids = cal_data_label_free[3]
 
-    # Stage 3: Score CAL Candidates with Adapted LoRA CE (Label-free, Fresh Run, Forced Seal)
-    print("\n--- STAGE 3: SCORE CAL CANDIDATES WITH ADAPTED CE (LABEL-FREE FRESH RUN) ---", flush=True)
+    # Stage 4: Score CAL Candidates with Adapted LoRA CE (Label-free, Fresh Run, Forced Seal)
+    print("\n--- STAGE 4: SCORE CAL CANDIDATES WITH ADAPTED CE (LABEL-FREE FRESH RUN) ---", flush=True)
     adapted_scores, manifest, cache_sha256, seal_time_utc = score_cal_adapted_section_ce(
         batch_size=64, force_fresh=True, cal_data=cal_data_label_free
     )
-    print(f"Stage 3 PASSED: Sealed cache SHA256: {cache_sha256} at {seal_time_utc}", flush=True)
+    print(f"Stage 4 PASSED: Sealed cache SHA256: {cache_sha256} at {seal_time_utc}", flush=True)
 
-    # Stage 4: CAL Access Order Audit & Gold Reveal
-    print("\n--- STAGE 4: CAL ACCESS ORDER AUDIT & GOLD REVEAL ---", flush=True)
+    # Stage 5: CAL Access Order Audit & Gold Reveal
+    print("\n--- STAGE 5: CAL ACCESS ORDER AUDIT & GOLD REVEAL ---", flush=True)
     assert CAL_ADAPTED_CACHE_PATH.exists(), "Adapted cache file does not exist!"
     cache_stat = CAL_ADAPTED_CACHE_PATH.stat()
     cache_mtime_utc = datetime.fromtimestamp(cache_stat.st_mtime, timezone.utc).isoformat()
+
+    # Pre-seal isolation verification from loader audit
+    pre_seal_gold_mat_count = loader_audit.get("runtime_inspection", {}).get("pre_seal_gold_materialization_count", -1)
+    pre_seal_ans_access_count = loader_audit.get("runtime_inspection", {}).get("pre_seal_answer_field_access_count", -1)
+    if pre_seal_gold_mat_count != 0 or pre_seal_ans_access_count != 0:
+        raise RuntimeError(
+            f"BLOCKED_CAL_LABEL_ISOLATION: Pre-seal gold materialization count={pre_seal_gold_mat_count}, "
+            f"answer field access count={pre_seal_ans_access_count}!"
+        )
 
     # Reveal gold strictly now, AFTER cache has been saved and sealed
     print("Revealing CAL gold labels for evaluation...", flush=True)
@@ -91,7 +108,7 @@ def main():
         )
 
     access_order_audit = {
-        "schema_version": "dsc2026.gemini.huy_d1_adapted_section_channel_public_v1.cal_access_order_audit.v1",
+        "schema_version": "dsc2026.gemini.huy_d1_adapted_section_channel_public_v1.cal_access_order_audit.v2",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "git_commit": git_info["head_commit"],
         "status": "PASS",
@@ -101,6 +118,9 @@ def main():
         "adapted_cache_file_mtime_utc": cache_mtime_utc,
         "gold_labels_revealed_timestamp_utc": gold_reveal_time_utc,
         "adapted_cache_sealed_before_gold_access": sealed_before_reveal,
+        "pre_seal_gold_materialization_count": pre_seal_gold_mat_count,
+        "pre_seal_answer_field_access_count": pre_seal_ans_access_count,
+        "loader_call_graph_audit_status": loader_audit.get("status"),
         "total_queries_scored_label_free": manifest.get("total_queries_scored"),
         "total_candidate_pairs_scored_label_free": manifest.get("total_candidate_pairs"),
         "total_queries_gold_revealed": len(gold),
@@ -112,22 +132,22 @@ def main():
     access_audit_path = RESULTS_DIR / "CAL_ACCESS_ORDER_AUDIT.json"
     access_audit_path.write_text(json.dumps(access_order_audit, indent=2), encoding="utf-8")
     print(f"Wrote {access_audit_path}", flush=True)
-    print("Stage 4 PASSED: Proved cache was sealed before CAL gold access.", flush=True)
+    print("Stage 5 PASSED: Proved cache was sealed before CAL gold access and pre-seal call graph is strictly label-free.", flush=True)
 
-    # Stage 5: Baseline & Control Parity Audit
-    print("\n--- STAGE 5: BASELINE & CONTROL PARITY AUDIT ---", flush=True)
+    # Stage 6: Baseline & Control Parity Audit
+    print("\n--- STAGE 6: BASELINE & CONTROL PARITY AUDIT ---", flush=True)
     run_baseline_and_control_parity(cal_data=cal_data_label_free, gold=gold)
-    print("Stage 5 PASSED.", flush=True)
+    print("Stage 6 PASSED.", flush=True)
 
-    # Stage 6: Three-Arm LOBO Evaluation & Local Decision Gates
-    print("\n--- STAGE 6: THREE-ARM LOBO EVALUATION & LOCAL GATES ---", flush=True)
+    # Stage 7: Three-Arm LOBO Evaluation & Local Decision Gates
+    print("\n--- STAGE 7: THREE-ARM LOBO EVALUATION & LOCAL GATES ---", flush=True)
     report_data, verdict = evaluate_local_three_arms(cal_data=cal_data_label_free, gold=gold)
-    print(f"Stage 6 PASSED with local verdict: {verdict}", flush=True)
+    print(f"Stage 7 PASSED with local verdict: {verdict}", flush=True)
 
-    # Stage 7: Public Stage (Conditional on local verdict)
-    print("\n--- STAGE 7: CONDITIONAL PUBLIC STAGE ---", flush=True)
+    # Stage 8: Conditional Public Stage
+    print("\n--- STAGE 8: CONDITIONAL PUBLIC STAGE ---", flush=True)
     public_manifest = run_public_stage()
-    print(f"Stage 7 completed with status: {public_manifest.get('status', 'EXECUTED')}", flush=True)
+    print(f"Stage 8 completed with status: {public_manifest.get('status', 'EXECUTED')}", flush=True)
 
     t_total = time.perf_counter() - t_start
     print("\n================================================================================", flush=True)

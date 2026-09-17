@@ -110,7 +110,7 @@ def run_provenance_audit() -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     # 3. Source provenance
     source_files = {}
-    for f in sorted(SOURCE_DIR.glob("*.py")):
+    for f in sorted(list(SOURCE_DIR.glob("*.py")) + list(SOURCE_DIR.glob("*.json"))):
         source_files[f.name] = {
             "path": str(f.relative_to(ROOT)).replace("\\", "/"),
             "size_bytes": f.stat().st_size,
