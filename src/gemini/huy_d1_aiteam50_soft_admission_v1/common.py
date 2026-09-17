@@ -265,26 +265,25 @@ def load_cal_data_label_free():
         "base": base_cands,
         "expanded": {q: expanded_ranks[q][:20] for q in all_ids},
         "raw": {q: raw_cache[q][:20] for q in all_ids},
-        "dense": rank_by(views_cands, old_dense),
-        "jina": rank_by(views_cands, old_jina),
-        "e5": rank_by(views_cands, old_e5),
-        "vi_rerank": rank_by(views_cands, vi_rerank),
-        "expanded_rerank": rank_by(views_cands, expanded_scores),
+        "jina": rank_by(views_cands, expanded_scores["jina"]),
+        "dense": rank_by(views_cands, expanded_scores["dense"]),
+        "vi": rank_by(base_cands, vi_rerank),
+        "e5": rank_by(base_cands, old_e5),
+        "old_jina": rank_by(base_cands, old_jina),
+        "old_dense": rank_by(base_cands, old_dense),
     }
 
+    dense_saved = load("results/corpus_index/holdout_dense_rank_cap32.pkl")
+    corpus_rank, corpus_score = dense_saved["ranking"], dense_saved["scores"]
     extended_scores_cap = load("results/corpus_index/holdout_extended_scores_cap32.pkl")
-    corpus_score = extended_scores_cap["corpus"]
-    corpus_rank = {
-        q: sorted(corpus_score[q], key=lambda d: (-corpus_score[q][d], d))
-        for q in all_ids
-    }
 
-    extended = {
-        q: list(dict.fromkeys(base_cands[q] + expanded_ranks[q][:20] + corpus_rank[q][:20]))
-        for q in all_ids
-    }
-
-    local_views = {v: views_rebuilt[v] for v in ["base", "expanded", "jina", "dense"]}
+    extended = {q: list(dict.fromkeys(list(views_cands[q]) + corpus_rank[q][:20])) for q in all_ids}
+    local_views = dict(views_rebuilt)
+    for name, table in (("jina", extended_scores_cap["jina"]), ("dense", extended_scores_cap["dense"])):
+        local_views[name] = {
+            q: sorted(extended[q], key=lambda d: (-table[q].get(d, -1e9), d))
+            for q in all_ids
+        }
     local_views["corpus"] = {
         q: [d for d in corpus_rank[q] if d in set(extended[q])]
         for q in all_ids
