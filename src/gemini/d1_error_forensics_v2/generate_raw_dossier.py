@@ -441,7 +441,15 @@ def run_extraction() -> bool:
         for mg in dq["missed_golds"]:
             doc_id = mg["doc_id"]
             d_info = get_doc_data(doc_id)
-            if not d_info["exists_in_corpus"] or not d_info["passage"]:
+            if not d_info["exists_in_corpus"]:
+                q3_pass = False
+                break
+            ctx_file = CONTEXTS_DIR / f"context_{doc_id}.json"
+            if not ctx_file.exists():
+                q3_pass = False
+                break
+            raw_ctx = json.loads(ctx_file.read_text(encoding="utf-8"))
+            if d_info["passage"] != (raw_ctx.get("passage") or ""):
                 q3_pass = False
                 break
 
@@ -481,13 +489,11 @@ def run_extraction() -> bool:
     for dq in dossier_queries:
         qid = dq["qid"]
         q_forensics = next((x for x in error_queries_forensics if x["qid"] == qid), {})
-        d1_ranking = q_forensics.get("d1_ranking", [])
+        f_rank_map = {g["doc_id"]: g.get("d1_final_rank") for g in q_forensics.get("error_localization", [])}
         for mg in dq["missed_golds"]:
-            if mg["candidate_pool_membership"]:
-                expected_r = next((i + 1 for i, item in enumerate(d1_ranking) if item["doc_id"] == mg["doc_id"]), None)
-                if mg["final_d1_rank"] != expected_r:
-                    q7_pass = False
-                    break
+            if mg["final_d1_rank"] != f_rank_map.get(mg["doc_id"]):
+                q7_pass = False
+                break
 
     # 8. All score values copied from source cache/artifact
     q8_pass = True
