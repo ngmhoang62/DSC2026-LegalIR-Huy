@@ -71,7 +71,7 @@ EXTRA_CV_PATHS = {
 EXTRA_PUB_PATHS = {
     "aiteamvn_ft": "results/from_drive/aiteamvn_ft_public.pkl",
     "jina_ft": "results/from_drive/jina_ft_public.pkl",
-    "title_embed": "results/burst_public_block/title_embed_scores.pkl",
+    "title_embed": "results/burst_fresh_block/title_embed_public.pkl",
 }
 
 
