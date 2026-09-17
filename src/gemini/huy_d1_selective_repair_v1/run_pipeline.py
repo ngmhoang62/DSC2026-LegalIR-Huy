@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 
 from tune_expanded_fusion_selection import ltr_features
 
-from .common import (
+from src.gemini.huy_d1_selective_repair_v1.common import (
     BOOTSTRAP_REPLICAS,
     BOOTSTRAP_THRESHOLD,
     CAL_CONTEXTS_DIR,
@@ -43,12 +43,12 @@ from .common import (
     seed_everything,
     sha256_file,
 )
-from .evaluate_arms import (
+from src.gemini.huy_d1_selective_repair_v1.evaluate_arms import (
     compute_arm_metrics,
     compute_intervention_churn_and_utility,
     evaluate_parity,
 )
-from .tier1_citation import (
+from src.gemini.huy_d1_selective_repair_v1.tier1_citation import (
     apply_tier1_repair,
     index_corpus_own_references,
     index_v2_corpus_own_references,
@@ -56,7 +56,7 @@ from .tier1_citation import (
     run_cal_citation_audit,
     run_v2_citation_shadow,
 )
-from .tier2_bootstrap import (
+from src.gemini.huy_d1_selective_repair_v1.tier2_bootstrap import (
     evaluate_bootstrap_committee,
     find_rank6_proposals,
     load_tier2_score_caches,

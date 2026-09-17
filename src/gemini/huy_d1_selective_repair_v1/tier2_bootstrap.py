@@ -12,7 +12,7 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 
-from .common import (
+from src.gemini.huy_d1_selective_repair_v1.common import (
     BOOTSTRAP_REPLICAS,
     BOOTSTRAP_THRESHOLD,
     CAL_FROZEN_SECTION_CACHE_PATH,

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from .common import (
+from src.gemini.huy_d1_selective_repair_v1.common import (
     EXPECTED_BLOCK_RECALLS,
     EXPECTED_D1_R5,
 )

@@ -7,7 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .common import (
+from src.gemini.huy_d1_selective_repair_v1.common import (
     CAL_CONTEXTS_DIR,
     CANONICAL_V2_CONTEXTS_JSONL,
     CANONICAL_V2_QUERIES_JSONL,
