@@ -23,7 +23,8 @@ from .common import (
     FROZEN_SECTION_CACHE_PATH,
     RESULTS_DIR,
     get_git_status,
-    load_cal_data,
+    load_cal_data_label_free,
+    load_cal_gold_labels,
     seed_everything,
 )
 
@@ -115,15 +116,22 @@ def evaluate_lobo_arm(
     return preds, feature_dim, metrics, scores_dict
 
 
-def run_baseline_and_control_parity() -> Dict[str, Any]:
-    print("=== STAGE 3: BASELINE & CONTROL PARITY AUDIT ===", flush=True)
+def run_baseline_and_control_parity(
+    cal_data: Optional[Tuple] = None,
+    gold: Optional[Dict[str, Set[str]]] = None,
+) -> Dict[str, Any]:
+    print("=== STAGE 5: BASELINE & CONTROL PARITY AUDIT ===", flush=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     seed_everything(2026)
     git_info = get_git_status()
 
     # 1. Load CAL dataset
-    print("Loading CAL dataset...", flush=True)
-    docs, queries, blocks, all_ids, extended, local_views, full_channels_cv, gold, type_rows, cite_rows = load_cal_data()
+    if cal_data is None or gold is None:
+        print("Loading CAL dataset and gold labels...", flush=True)
+        docs, queries, blocks, all_ids, extended, local_views, full_channels_cv, type_rows, cite_rows = load_cal_data_label_free()
+        gold, _ = load_cal_gold_labels(all_ids)
+    else:
+        docs, queries, blocks, all_ids, extended, local_views, full_channels_cv, type_rows, cite_rows = cal_data
 
     # 2. Evaluate A0: D1 48D Baseline
     print("Evaluating A0 (D1 48D Baseline)...", flush=True)

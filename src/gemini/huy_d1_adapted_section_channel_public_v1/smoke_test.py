@@ -10,7 +10,8 @@ from .common import (
     ADAPTER_DIR,
     D1_VIEWS,
     load_adapted_jina_model,
-    load_cal_data,
+    load_cal_data_label_free,
+    load_cal_gold_labels,
     seed_everything,
     sha256_file,
 )
@@ -26,6 +27,15 @@ def run_smoke_test():
     sections = parse_document_into_sections("doc_test", sample_text, max_chunk_words=220, overlap_words=60)
     assert len(sections) == 1, f"Expected 1 section for short doc, got {len(sections)}"
 
+    # Short title text (like doc 288457 fallback)
+    title_text = "Luat Bao hiem y te"
+    t_secs = parse_document_into_sections("288457", title_text)
+    assert len(t_secs) == 1 and t_secs[0].section_type == "FULL_DOC", f"Failed title text parsing: {t_secs}"
+
+    # Empty text returns empty list
+    assert parse_document_into_sections("empty", "") == []
+    assert parse_document_into_sections("whitespace", "   \n\t  ") == []
+
     # Long doc (>270 words)
     long_text = "CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM\nĐộc lập - Tự do - Hạnh phúc\n\nLUẬT DOANH NGHIỆP\n" + "\n".join([f"Điều {i}. Quy định về điều khoản {i} với nội dung chi tiết quy định quyền và nghĩa vụ của các bên liên quan trong hoạt động đầu tư kinh doanh thương mại và dân sự trên lãnh thổ nước Cộng hòa xã hội chủ nghĩa Việt Nam nhằm thúc đẩy phát triển kinh tế xã hội và bảo đảm an ninh quốc phòng." for i in range(1, 15)])
     long_secs = parse_document_into_sections("doc_long", long_text, max_chunk_words=220, overlap_words=60)
@@ -34,7 +44,18 @@ def run_smoke_test():
     assert len(selected) == 2, f"Expected 2 selected sections, got {len(selected)}"
     print("Legal section parser test: PASS")
 
-    # 2. Test model loading and adapter attachment
+    # 2. Test label-free loader vs gold loader
+    docs, queries, blocks, all_ids, extended, local_views, full_channels_cv, type_rows, cite_rows = load_cal_data_label_free()
+    assert len(all_ids) == 600
+    assert all(queries[q][1] is None for q in all_ids), "Label-free queries must not contain gold labels!"
+    print("Label-free loader test: PASS")
+
+    gold, reveal_time = load_cal_gold_labels(all_ids[:10])
+    assert len(gold) == 10
+    assert isinstance(reveal_time, str) and len(reveal_time) > 10
+    print("Gold loader test: PASS")
+
+    # 3. Test model loading and adapter attachment
     print("Loading adapted Jina model on GPU for forward pass check...", flush=True)
     adapted_model, base_model, tok = load_adapted_jina_model(device="cuda")
     pairs = [("Thuế giá trị gia tăng là gì?", "Điều 1. Thuế giá trị gia tăng là thuế tính trên giá trị tăng thêm.")]
@@ -53,7 +74,7 @@ def run_smoke_test():
     del adapted_model, base_model, tok
     torch.cuda.empty_cache()
 
-    # 3. Test adapter hash calculation
+    # 4. Test adapter hash calculation
     config_sha = sha256_file(ADAPTER_DIR / "adapter_config.json")
     model_sha = sha256_file(ADAPTER_DIR / "adapter_model.safetensors")
     assert len(config_sha) == 64 and len(model_sha) == 64

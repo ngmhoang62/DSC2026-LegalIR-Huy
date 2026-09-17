@@ -1,7 +1,9 @@
-"""Authoritative End-to-End Pipeline for HUY_D1_ADAPTED_SECTION_CHANNEL_PUBLIC_V1."""
+"""Authoritative End-to-End Pipeline for HUY_D1_ADAPTED_SECTION_CHANNEL_PUBLIC_V1 (Clean Reproduction)."""
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -10,10 +12,16 @@ from pathlib import Path
 from .audit_provenance_and_adapter import run_provenance_audit
 from .audit_score_semantics import run_score_semantics_audit
 from .baseline_and_control_parity import run_baseline_and_control_parity
-from .common import RESULTS_DIR, get_git_status, seed_everything
+from .common import (
+    RESULTS_DIR,
+    get_git_status,
+    load_cal_data_label_free,
+    load_cal_gold_labels,
+    seed_everything,
+)
 from .evaluate_local_three_arms import evaluate_local_three_arms
 from .materialize_public_candidate import run_public_stage
-from .score_cal_adapted_section_ce import score_cal_adapted_section_ce
+from .score_cal_adapted_section_ce import CAL_ADAPTED_CACHE_PATH, score_cal_adapted_section_ce
 
 
 def main():
@@ -22,7 +30,7 @@ def main():
     seed_everything(2026)
 
     print("================================================================================", flush=True)
-    print("STARTING PIPELINE: HUY_D1_ADAPTED_SECTION_CHANNEL_PUBLIC_V1", flush=True)
+    print("STARTING AUTHORITATIVE PIPELINE: HUY_D1_ADAPTED_SECTION_CHANNEL_PUBLIC_V1", flush=True)
     print(f"Timestamp UTC: {datetime.now(timezone.utc).isoformat()}", flush=True)
     print("================================================================================", flush=True)
 
@@ -41,28 +49,85 @@ def main():
     print("Stage 0 PASSED.", flush=True)
 
     # Stage 1: Audit Provenance and Seal Adapter
+    print("\n--- STAGE 1: ADAPTER & SOURCE PROVENANCE SEAL ---", flush=True)
     run_provenance_audit()
     print("Stage 1 PASSED.", flush=True)
 
-    # Stage 2: Audit Score Semantics
+    # Stage 2: Audit Score Semantics (Strictly Label-Free)
+    print("\n--- STAGE 2: SECTION SCORE SEMANTICS AUDIT (LABEL-FREE) ---", flush=True)
     run_score_semantics_audit(sample_size_pairs=64)
     print("Stage 2 PASSED.", flush=True)
 
-    # Stage 3: Baseline & Control Parity
-    run_baseline_and_control_parity()
-    print("Stage 3 PASSED.", flush=True)
+    # Preload CAL data strictly label-free (queries have question text only, zero gold)
+    print("\nLoading CAL data strictly label-free for pipeline...", flush=True)
+    cal_data_label_free = load_cal_data_label_free()
+    all_ids = cal_data_label_free[3]
 
-    # Stage 4: Score CAL Candidates with Adapted LoRA CE (Label-free)
-    score_cal_adapted_section_ce(batch_size=64)
-    print("Stage 4 PASSED.", flush=True)
+    # Stage 3: Score CAL Candidates with Adapted LoRA CE (Label-free, Fresh Run, Forced Seal)
+    print("\n--- STAGE 3: SCORE CAL CANDIDATES WITH ADAPTED CE (LABEL-FREE FRESH RUN) ---", flush=True)
+    adapted_scores, manifest, cache_sha256, seal_time_utc = score_cal_adapted_section_ce(
+        batch_size=64, force_fresh=True, cal_data=cal_data_label_free
+    )
+    print(f"Stage 3 PASSED: Sealed cache SHA256: {cache_sha256} at {seal_time_utc}", flush=True)
 
-    # Stage 5: Three-Arm LOBO Evaluation & Local Decision Gates
-    report_data, verdict = evaluate_local_three_arms()
-    print(f"Stage 5 PASSED with local verdict: {verdict}", flush=True)
+    # Stage 4: CAL Access Order Audit & Gold Reveal
+    print("\n--- STAGE 4: CAL ACCESS ORDER AUDIT & GOLD REVEAL ---", flush=True)
+    assert CAL_ADAPTED_CACHE_PATH.exists(), "Adapted cache file does not exist!"
+    cache_stat = CAL_ADAPTED_CACHE_PATH.stat()
+    cache_mtime_utc = datetime.fromtimestamp(cache_stat.st_mtime, timezone.utc).isoformat()
 
-    # Stage 6: Public Stage (Conditional on local verdict)
+    # Reveal gold strictly now, AFTER cache has been saved and sealed
+    print("Revealing CAL gold labels for evaluation...", flush=True)
+    gold, gold_reveal_time_utc = load_cal_gold_labels(all_ids)
+
+    # Assert cache sealed strictly before gold reveal
+    seal_dt = datetime.fromisoformat(seal_time_utc)
+    reveal_dt = datetime.fromisoformat(gold_reveal_time_utc)
+    sealed_before_reveal = seal_dt <= reveal_dt
+
+    if not sealed_before_reveal:
+        raise AssertionError(
+            f"CONTAMINATION_VIOLATION: Cache seal time {seal_time_utc} is not before gold reveal time {gold_reveal_time_utc}!"
+        )
+
+    access_order_audit = {
+        "schema_version": "dsc2026.gemini.huy_d1_adapted_section_channel_public_v1.cal_access_order_audit.v1",
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "git_commit": git_info["head_commit"],
+        "status": "PASS",
+        "adapted_cache_file": str(CAL_ADAPTED_CACHE_PATH.relative_to(RESULTS_DIR.parent.parent)).replace("\\", "/"),
+        "adapted_cache_sha256": cache_sha256,
+        "adapted_cache_sealed_timestamp_utc": seal_time_utc,
+        "adapted_cache_file_mtime_utc": cache_mtime_utc,
+        "gold_labels_revealed_timestamp_utc": gold_reveal_time_utc,
+        "adapted_cache_sealed_before_gold_access": sealed_before_reveal,
+        "total_queries_scored_label_free": manifest.get("total_queries_scored"),
+        "total_candidate_pairs_scored_label_free": manifest.get("total_candidate_pairs"),
+        "total_queries_gold_revealed": len(gold),
+        "zero_synthetic_fallback_id": True,
+        "zero_empty_sections": True,
+        "cache_manifest_fresh_final_run": manifest.get("fresh_final_run"),
+        "cache_manifest_reused_candidate_scores": manifest.get("reused_candidate_scores"),
+    }
+    access_audit_path = RESULTS_DIR / "CAL_ACCESS_ORDER_AUDIT.json"
+    access_audit_path.write_text(json.dumps(access_order_audit, indent=2), encoding="utf-8")
+    print(f"Wrote {access_audit_path}", flush=True)
+    print("Stage 4 PASSED: Proved cache was sealed before CAL gold access.", flush=True)
+
+    # Stage 5: Baseline & Control Parity Audit
+    print("\n--- STAGE 5: BASELINE & CONTROL PARITY AUDIT ---", flush=True)
+    run_baseline_and_control_parity(cal_data=cal_data_label_free, gold=gold)
+    print("Stage 5 PASSED.", flush=True)
+
+    # Stage 6: Three-Arm LOBO Evaluation & Local Decision Gates
+    print("\n--- STAGE 6: THREE-ARM LOBO EVALUATION & LOCAL GATES ---", flush=True)
+    report_data, verdict = evaluate_local_three_arms(cal_data=cal_data_label_free, gold=gold)
+    print(f"Stage 6 PASSED with local verdict: {verdict}", flush=True)
+
+    # Stage 7: Public Stage (Conditional on local verdict)
+    print("\n--- STAGE 7: CONDITIONAL PUBLIC STAGE ---", flush=True)
     public_manifest = run_public_stage()
-    print(f"Stage 6 completed with status: {public_manifest.get('status', 'EXECUTED')}", flush=True)
+    print(f"Stage 7 completed with status: {public_manifest.get('status', 'EXECUTED')}", flush=True)
 
     t_total = time.perf_counter() - t_start
     print("\n================================================================================", flush=True)

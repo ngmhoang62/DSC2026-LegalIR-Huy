@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -161,7 +161,21 @@ class SafeDocumentStore:
         return text
 
 
-def load_cal_data():
+def get_source_files_sha256() -> Dict[str, Dict[str, Any]]:
+    source_files = {}
+    for f in sorted(SOURCE_DIR.glob("*.py")):
+        source_files[f.name] = {
+            "path": str(f.relative_to(ROOT)).replace("\\", "/"),
+            "size_bytes": f.stat().st_size,
+            "sha256": sha256_file(f),
+        }
+    return source_files
+
+
+def load_cal_data_label_free():
+    """Load CAL data without labels: docs, query text, blocks, qids, candidates, views, scores.
+    Strictly zero CAL gold labels are read, materialized, or returned.
+    """
     from tune_citation_graph import build_citation_table, citation_features
     from tune_corpus_cap32_fusion import build_training_cap
     from tune_doctype_features import build_type_table, type_features
@@ -174,7 +188,7 @@ def load_cal_data():
             ).glob("context_*.json")
         )
     )
-    queries, raw_blocks, all_ids, extended, local_views, base_scores = (
+    raw_queries, raw_blocks, all_ids, extended, local_views, base_scores = (
         build_training_cap(
             ROOT,
             32,
@@ -183,7 +197,9 @@ def load_cal_data():
         )
     )
     blocks = {k.upper(): v for k, v in raw_blocks.items()}
-    gold = {q: set(queries[q][1]) for q in all_ids}
+    # Strictly strip all gold answers: queries_label_free only contains question text
+    queries_label_free = {q: (raw_queries[q][0], None) for q in all_ids}
+    del raw_queries
 
     def load_aligned(rel_path: str, floor=None):
         raw = load_pkl(rel_path)
@@ -201,13 +217,56 @@ def load_cal_data():
     }
 
     type_table = build_type_table(ROOT, docs, all_ids, extended)
-    type_rows = type_features(extended, type_table, queries, all_ids)
+    type_rows = type_features(extended, type_table, queries_label_free, all_ids)
     own, cited = build_citation_table(docs, all_ids, extended)
     cite_rows = citation_features(extended, own, cited, all_ids)
 
     return (
         docs,
+        queries_label_free,
+        blocks,
+        all_ids,
+        extended,
+        local_views,
+        full_channels_cv,
+        type_rows,
+        cite_rows,
+    )
+
+
+def load_cal_gold_labels(all_ids: List[str]) -> Tuple[Dict[str, Set[str]], str]:
+    """Strictly loads gold labels for evaluation stage AFTER adapted cache seal.
+    Returns gold mapping and timestamp ISO string.
+    """
+    reveal_time_utc = datetime.now(timezone.utc).isoformat()
+    path = ROOT / "DSC2026-LegalIR-main" / "v4_run" / "public_test_dataset" / "train.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    gold = {
+        str(qid): {str(d) for d in raw[str(qid)]["answer"]}
+        for qid in all_ids
+    }
+    return gold, reveal_time_utc
+
+
+def load_cal_data():
+    """Convenience helper combining label-free data and gold labels for backward compatibility."""
+    (
+        docs,
         queries,
+        blocks,
+        all_ids,
+        extended,
+        local_views,
+        full_channels_cv,
+        type_rows,
+        cite_rows,
+    ) = load_cal_data_label_free()
+    gold, _ = load_cal_gold_labels(all_ids)
+    # Restore tuple format (q_text, gold_set) for compatibility
+    queries_with_gold = {q: (queries[q][0], gold[q]) for q in all_ids}
+    return (
+        docs,
+        queries_with_gold,
         blocks,
         all_ids,
         extended,
@@ -217,6 +276,7 @@ def load_cal_data():
         type_rows,
         cite_rows,
     )
+
 
 
 def patch_transformers_v5() -> None:

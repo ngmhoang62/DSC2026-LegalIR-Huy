@@ -16,7 +16,7 @@ from .common import (
     FROZEN_SECTION_CACHE_PATH,
     RESULTS_DIR,
     get_git_status,
-    load_cal_data,
+    load_cal_data_label_free,
     load_shipped_frozen_jina,
     seed_everything,
 )
@@ -24,14 +24,14 @@ from .legal_section_parser import parse_document_into_sections, preselect_legal_
 
 
 def run_score_semantics_audit(sample_size_pairs: int = 64) -> Dict[str, Any]:
-    print("=== STAGE 2: SECTION SCORE SEMANTICS AUDIT ===", flush=True)
+    print("=== STAGE 2: SECTION SCORE SEMANTICS AUDIT (LABEL-FREE) ===", flush=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     seed_everything(2026)
     git_info = get_git_status()
 
-    # 1. Load CAL data and frozen Section CE cache
-    print("Loading CAL data and frozen Section CE cache...", flush=True)
-    docs, queries, blocks, all_ids, extended, local_views, full_channels_cv, gold, type_rows, cite_rows = load_cal_data()
+    # 1. Load CAL data (strictly label-free) and frozen Section CE cache
+    print("Loading CAL data (strictly label-free) and frozen Section CE cache...", flush=True)
+    docs, queries, blocks, all_ids, extended, local_views, full_channels_cv, type_rows, cite_rows = load_cal_data_label_free()
 
     if not FROZEN_SECTION_CACHE_PATH.exists():
         raise FileNotFoundError(f"Missing frozen Section CE cache: {FROZEN_SECTION_CACHE_PATH}")
@@ -143,7 +143,7 @@ def run_score_semantics_audit(sample_size_pairs: int = 64) -> Dict[str, Any]:
         "spearman_correlation": float(spearman_corr),
         "pearson_correlation": float(pearson_corr),
         "audit_passed": bool(audit_passed),
-        "score_semantics_rule": "adapted_probability = sigmoid(adapted_raw_logit)",
+        "score_semantics_rule": "adapted_probability = sigmoid(adapted_raw_logit) (compatible within predefined tolerance: MAE <= 2e-3, Spearman >= 0.999)",
         "sample_records": audit_records[:10],
     }
 
@@ -153,11 +153,11 @@ def run_score_semantics_audit(sample_size_pairs: int = 64) -> Dict[str, Any]:
 
     if not audit_passed:
         raise RuntimeError(
-            f"BLOCKED_SECTION_SCORE_SEMANTICS: Frozen cache does not correspond to sigmoid(raw_logit)! "
+            f"BLOCKED_SECTION_SCORE_SEMANTICS: Frozen cache is not compatible within predefined tolerance with sigmoid(raw_logit)! "
             f"Max error={max_abs_error:.6e}, Spearman={spearman_corr:.6f}"
         )
 
-    print("Score Semantics Audit PASSED successfully.", flush=True)
+    print("Score Semantics Audit PASSED successfully (compatible within predefined tolerance).", flush=True)
     return result
 
 

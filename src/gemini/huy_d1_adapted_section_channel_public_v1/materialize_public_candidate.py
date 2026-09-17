@@ -399,16 +399,10 @@ def run_public_stage() -> Dict[str, Any]:
                         did, pub_d_text, max_chunk_words=220, overlap_words=60
                     )
                     if not secs:
-                        secs = [
-                            LegalSection(
-                                doc_id=did,
-                                section_index=0,
-                                section_type="FALLBACK_ID",
-                                heading=did,
-                                text=did,
-                                word_count=1,
-                            )
-                        ]
+                        raise RuntimeError(
+                            f"BLOCKED_EMPTY_DOCUMENT_SECTION_COVERAGE: Public candidate doc '{did}' for query '{qid}' "
+                            f"yielded 0 usable sections! Text was: {pub_d_text!r}"
+                        )
                     pub_doc_sections_cache[did] = secs
                 secs = pub_doc_sections_cache[did]
                 chosen_secs = preselect_legal_sections(q_text, secs, count=2)

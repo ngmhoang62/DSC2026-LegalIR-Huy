@@ -22,7 +22,8 @@ from .common import (
     FROZEN_SECTION_CACHE_PATH,
     RESULTS_DIR,
     get_git_status,
-    load_cal_data,
+    load_cal_data_label_free,
+    load_cal_gold_labels,
     seed_everything,
 )
 from .score_cal_adapted_section_ce import CAL_ADAPTED_CACHE_PATH
@@ -184,15 +185,22 @@ def compare_arms(
     }
 
 
-def evaluate_local_three_arms() -> Tuple[Dict[str, Any], str]:
-    print("=== STAGE 5: THREE-ARM LOBO EVALUATION & LOCAL GATES ===", flush=True)
+def evaluate_local_three_arms(
+    cal_data: Optional[Tuple] = None,
+    gold: Optional[Dict[str, Set[str]]] = None,
+) -> Tuple[Dict[str, Any], str]:
+    print("=== STAGE 6: THREE-ARM LOBO EVALUATION & LOCAL GATES ===", flush=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     seed_everything(2026)
     git_info = get_git_status()
 
     # 1. Load CAL data and gold
-    print("Loading CAL dataset and gold labels...", flush=True)
-    docs, queries, blocks, all_ids, extended, local_views, full_channels_cv, gold, type_rows, cite_rows = load_cal_data()
+    if cal_data is None or gold is None:
+        print("Loading CAL dataset and gold labels...", flush=True)
+        docs, queries, blocks, all_ids, extended, local_views, full_channels_cv, type_rows, cite_rows = load_cal_data_label_free()
+        gold, _ = load_cal_gold_labels(all_ids)
+    else:
+        docs, queries, blocks, all_ids, extended, local_views, full_channels_cv, type_rows, cite_rows = cal_data
 
     # 2. Load Frozen Section CE cache (A1)
     if not FROZEN_SECTION_CACHE_PATH.exists():
