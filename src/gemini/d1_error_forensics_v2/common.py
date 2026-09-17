@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,6 +30,13 @@ LEGAL_SECTION_PKL_PATH = ROOT / "results/gemini/huy_d1_legal_section_evidence_v1
 RECOVERY_CASES_PATH = ROOT / "results/gemini/huy_d1_query_anchored_legal_ref_expansion_v1/OUTSIDE_POOL_GOLD_RECOVERY_CASES.json"
 V2_SHADOW_PATH = ROOT / "results/gemini/huy_d1_query_anchored_legal_ref_expansion_v1/V2_SHADOW_EXPANSION_RESULTS.json"
 
+# Old Jina exact cache from HUY_D1_SECTION_RESIDUAL_SELECTOR_V1
+OLD_JINA_CACHE_PKL = ROOT / "results/from_drive/jina_ft_cv.pkl"
+EXPECTED_OLD_JINA_CACHE_SHA256 = "666296dc0bffdf7366c2b5834aed1612bb34ffc45bbd2696b227338367282d00"
+
+# D1 Candidate pool source
+HOLDOUT_EXTENDED_PKL_PATH = ROOT / "results/corpus_index/holdout_extended_scores_cap32.pkl"
+
 # D1 Champion specification
 EXPECTED_D1_R5 = 0.9569444444444444
 EXPECTED_BLOCK_RECALLS = {
@@ -43,6 +51,7 @@ EXPECTED_FEATURE_DIM = 48
 from run_burst_expanded_fusion_submission import title_from_link
 from tune_doctype_features import doc_type
 from tune_citation_graph import own_number
+from tune_corpus_cap32_fusion import build_training_cap
 
 # In-memory document cache to avoid re-reading JSON files
 _DOC_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -87,12 +96,54 @@ def get_doc_data(doc_id: str) -> Dict[str, Any]:
 
 def sha256_file(path: Path) -> str:
     """Compute SHA256 hex digest of a file."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def sha256_text(text: str) -> str:
     """Compute SHA256 hex digest of a UTF-8 string."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def check_source_provenance() -> Tuple[bool, Dict[str, Any]]:
+    """Hard-gate source provenance before reading/generating authoritative artifacts."""
+    try:
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True
+        ).strip()
+        origin = subprocess.check_output(
+            ["git", "rev-parse", "origin/main"], cwd=str(ROOT), text=True
+        ).strip()
+        porcelain = subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=str(ROOT), text=True
+        ).strip()
+        parity = head == origin
+        status_clean = len(porcelain) == 0
+        src_files_sha256 = {
+            "common.py": sha256_file(SRC_DIR / "common.py"),
+            "generate_raw_dossier.py": sha256_file(SRC_DIR / "generate_raw_dossier.py"),
+        }
+        provenance_info = {
+            "head_commit": head,
+            "origin_main_commit": origin,
+            "parity": parity,
+            "status_clean": status_clean,
+            "porcelain_output": porcelain,
+            "source_files_sha256": src_files_sha256,
+        }
+        passed = parity and status_clean
+        return passed, provenance_info
+    except Exception as e:
+        return False, {
+            "head_commit": "ERROR",
+            "origin_main_commit": "ERROR",
+            "parity": False,
+            "status_clean": False,
+            "error": str(e),
+        }
 
 
 def compute_pairwise_preferences(

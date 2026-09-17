@@ -1,7 +1,7 @@
 """Authoritative deterministic raw forensic extraction for D1 Champion Errors.
 
-Enforces exact D1 parity gate, pure raw data extraction from authoritative artifacts,
-zero semantic interpretation/LLM generation, and 10-point integrity verification.
+Enforces exact D1 parity gate, source provenance hard-gate, pure raw data extraction,
+zero semantic interpretation/LLM generation, and strengthened score integrity verification.
 """
 
 from __future__ import annotations
@@ -23,10 +23,13 @@ from src.gemini.d1_error_forensics_v2.common import (
     EXPECTED_BLOCK_RECALLS,
     EXPECTED_D1_R5,
     EXPECTED_FEATURE_DIM,
+    EXPECTED_OLD_JINA_CACHE_SHA256,
     EXPECTED_VIEWS,
     FORENSICS_JSON_PATH,
+    HOLDOUT_EXTENDED_PKL_PATH,
     INTEGRITY_JSON_PATH,
     LEGAL_SECTION_PKL_PATH,
+    OLD_JINA_CACHE_PKL,
     ORACLE_AUDIT_PATH,
     RECOVERY_CASES_PATH,
     RESULTS_DIR,
@@ -34,6 +37,8 @@ from src.gemini.d1_error_forensics_v2.common import (
     SWAP_DIAGNOSTICS_PATH,
     TRAIN_JSON_PATH,
     V2_SHADOW_PATH,
+    build_training_cap,
+    check_source_provenance,
     compute_pairwise_preferences,
     get_doc_data,
     sha256_file,
@@ -46,9 +51,20 @@ def run_extraction() -> bool:
     print("=== D1 ERROR FORENSICS V2: DETERMINISTIC RAW EXTRACTION ===")
 
     # -------------------------------------------------------------
-    # 1. Exact D1 contract gate
+    # 1. Hard-gate source provenance BEFORE reading/generating authoritative artifacts
     # -------------------------------------------------------------
-    print("\n[Gate Check] Verifying D1 Champion contract parity...")
+    print("\n[Gate 1/2] Checking Git source provenance hard-gate...")
+    passed_prov, prov_info = check_source_provenance()
+    if not passed_prov:
+        print("BLOCKED_SOURCE_PROVENANCE: HEAD != origin/main or working tree is not clean.")
+        print(json.dumps(prov_info, indent=2))
+        return False
+    print(f"  Source Provenance Verified: Commit {prov_info['head_commit']} (clean, synchronized with origin/main)")
+
+    # -------------------------------------------------------------
+    # 2. Exact D1 contract parity gate
+    # -------------------------------------------------------------
+    print("\n[Gate 2/2] Verifying D1 Champion contract parity...")
     if not FORENSICS_JSON_PATH.exists() or not INTEGRITY_JSON_PATH.exists():
         print("BLOCKED_D1_PARITY: Required D1 forensic artifacts do not exist.")
         return False
@@ -68,6 +84,13 @@ def run_extraction() -> bool:
 
     print(f"  D1 Parity Verified: Recall@5 = {r5:.16f}, Feature Dim = 48, Views = {EXPECTED_VIEWS}")
 
+    # Load authoritative candidate pool from D1 pipeline
+    print("\nLoading authoritative D1 candidate pools (extended)...")
+    _, _, all_ids, extended, _, _ = build_training_cap(
+        ROOT, 32, "results/corpus_index/holdout_extended_scores_cap32.pkl", depth=20
+    )
+    print(f"  Loaded candidate pools for {len(all_ids)} queries.")
+
     # Load ground truth queries & golds
     train_data = json.loads(TRAIN_JSON_PATH.read_text(encoding="utf-8"))
     sec_cache = pickle.loads(LEGAL_SECTION_PKL_PATH.read_bytes())
@@ -78,8 +101,17 @@ def run_extraction() -> bool:
     rec_data = json.loads(RECOVERY_CASES_PATH.read_text(encoding="utf-8"))
     v2_shadow_data = json.loads(V2_SHADOW_PATH.read_text(encoding="utf-8"))
 
+    # Load and audit exact old-Jina cache (OLD_JINA_CACHE_PKL)
+    print("Loading authoritative old-Jina score cache...")
+    actual_old_jina_sha = sha256_file(OLD_JINA_CACHE_PKL)
+    if actual_old_jina_sha != EXPECTED_OLD_JINA_CACHE_SHA256:
+        print(f"BLOCKED_SCORE_PROVENANCE: OLD_JINA_CACHE_PKL SHA256 mismatch. {actual_old_jina_sha} vs {EXPECTED_OLD_JINA_CACHE_SHA256}")
+        return False
+    old_jina_cache = pickle.loads(OLD_JINA_CACHE_PKL.read_bytes())
+    print(f"  Loaded old-Jina cache ({len(old_jina_cache)} queries, SHA256 verified).")
+
     # -------------------------------------------------------------
-    # 2. Extract D1_RAW_ERROR_DOSSIER_V2.json
+    # 3. Extract D1_RAW_ERROR_DOSSIER_V2.json
     # -------------------------------------------------------------
     print("\n[Step 1/5] Extracting D1_RAW_ERROR_DOSSIER_V2.json...")
     error_queries_forensics = forensics_data.get("error_queries", [])
@@ -97,6 +129,7 @@ def run_extraction() -> bool:
         train_entry = train_data.get(qid, {})
         exact_question = train_entry.get("question", q.get("question_text", ""))
         source_golds = train_entry.get("answer", q.get("all_gold_doc_ids", []))
+        q_pool = set(extended.get(qid, []))
 
         d1_ranking = q.get("d1_ranking", [])
         d1_score_map = {item["doc_id"]: item["final_ltr_score"] for item in d1_ranking}
@@ -117,7 +150,7 @@ def run_extraction() -> bool:
             doc_id = g_entry["doc_id"]
             bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
             final_d1_rank = g_entry.get("d1_final_rank")
-            in_pool = g_entry.get("is_in_candidate_pool", False)
+            in_pool = doc_id in q_pool
 
             doc_info = get_doc_data(doc_id)
             passage = doc_info["passage"]
@@ -231,9 +264,9 @@ def run_extraction() -> bool:
     print(f"  Saved {out_dossier_path} ({out_dossier_path.stat().st_size} bytes)")
 
     # -------------------------------------------------------------
-    # 3. Extract SECTION_ORACLE_RAW_CASES.json
+    # 4. Extract SECTION_ORACLE_RAW_CASES.json
     # -------------------------------------------------------------
-    print("\n[Step 2/5] Extracting SECTION_ORACLE_RAW_CASES.json...")
+    print("\n[Step 2/5] Extracting SECTION_ORACLE_RAW_CASES.json (with exact old-Jina scores)...")
     oracle_cases = []
     for opp in oracle_data.get("opportunity_queries", []):
         qid = opp["qid"]
@@ -254,11 +287,11 @@ def run_extraction() -> bool:
         sorted_sec_docs = sorted(q_sec_scores.keys(), key=lambda d: q_sec_scores[d], reverse=True)
         sec_rank_map = {d: r for r, d in enumerate(sorted_sec_docs, 1)}
 
-        # Old Jina scores
+        # Exact old-Jina scores from OLD_JINA_CACHE_PKL (no aliasing of crossenc)
         old_jina_scores = {}
         for d in missing_golds + nongold_defenders:
-            ee_d = q_forensics.get("expert_evidence", {}).get(d, {})
-            old_jina_scores[d] = ee_d.get("score_channels", {}).get("crossenc", {}).get("raw_score")
+            raw_old_jina = old_jina_cache.get(qid, {}).get(d)
+            old_jina_scores[d] = raw_old_jina
 
         titles = {}
         excerpts = {}
@@ -274,8 +307,10 @@ def run_extraction() -> bool:
             d1_scores_out[d] = d1_map.get(d)
             sec_scores_out[d] = q_sec_scores.get(d)
             sec_ranks_out[d] = sec_rank_map.get(d)
-            # Find d1 rank
-            d1_r = next((i + 1 for i, item in enumerate(d1_ranking) if item["doc_id"] == d), None)
+            # Find d1 rank from error_localization or d1_ranking
+            d1_r = next((g["d1_final_rank"] for g in q_forensics.get("error_localization", []) if g["doc_id"] == d), None)
+            if d1_r is None:
+                d1_r = next((i + 1 for i, item in enumerate(d1_ranking) if item["doc_id"] == d), None)
             d1_ranks_out[d] = d1_r
 
         # Pairwise prefs vs defender rank 5
@@ -320,7 +355,7 @@ def run_extraction() -> bool:
     print(f"  Saved {out_oracle_path} ({out_oracle_path.stat().st_size} bytes)")
 
     # -------------------------------------------------------------
-    # 4. Extract RESIDUAL_SELECTOR_RAW_CASES.json
+    # 5. Extract RESIDUAL_SELECTOR_RAW_CASES.json
     # -------------------------------------------------------------
     print("\n[Step 3/5] Extracting RESIDUAL_SELECTOR_RAW_CASES.json...")
     all_swaps = swap_data.get("swaps", [])
@@ -377,7 +412,7 @@ def run_extraction() -> bool:
     print(f"  Saved {out_selector_path} ({out_selector_path.stat().st_size} bytes)")
 
     # -------------------------------------------------------------
-    # 5. Extract LEGAL_REFERENCE_RECOVERY_RAW_CASES.json
+    # 6. Extract LEGAL_REFERENCE_RECOVERY_RAW_CASES.json
     # -------------------------------------------------------------
     print("\n[Step 4/5] Extracting LEGAL_REFERENCE_RECOVERY_RAW_CASES.json...")
     cal_recovered_raw = rec_data.get("recovered_cases", [])
@@ -414,10 +449,9 @@ def run_extraction() -> bool:
     print(f"  Saved {out_legal_ref_path} ({out_legal_ref_path.stat().st_size} bytes)")
 
     # -------------------------------------------------------------
-    # 6. Integrity Verification & DOSSIER_V2_INTEGRITY.json
+    # 7. Strengthened Deterministic Score Integrity Verification
     # -------------------------------------------------------------
-    print("\n[Step 5/5] Running 10-point integrity verification...")
-    integrity_passes = True
+    print("\n[Step 5/5] Running strengthened deterministic integrity verification...")
 
     # 1. qid -> question matches exact source query
     q1_pass = True
@@ -435,7 +469,7 @@ def run_extraction() -> bool:
             q2_pass = False
             break
 
-    # 3. document ID -> title/text matches corpus
+    # 3. document ID -> title/text matches corpus exactly
     q3_pass = True
     for dq in dossier_queries:
         for mg in dq["missed_golds"]:
@@ -473,16 +507,24 @@ def run_extraction() -> bool:
             q5_pass = False
             break
 
-    # 6. challenger and defender exist in candidate pool of qid
+    # 6. Candidate pool integrity (verified against exact D1 extended pool)
     q6_pass = True
     for s in all_swaps:
         qid = s["qid"]
         c = s["challenger_doc"]
         d = s["defender_doc"]
-        pool_docs = sec_scores.get(qid, {})
+        pool_docs = set(extended.get(qid, []))
         if c not in pool_docs or d not in pool_docs:
             q6_pass = False
             break
+    # Also verify missed golds pool membership matches extended
+    for dq in dossier_queries:
+        qid = dq["qid"]
+        pool_docs = set(extended.get(qid, []))
+        for mg in dq["missed_golds"]:
+            if mg["candidate_pool_membership"] != (mg["doc_id"] in pool_docs):
+                q6_pass = False
+                break
 
     # 7. D1 final rank reproduces from exact D1 ranking
     q7_pass = True
@@ -495,23 +537,127 @@ def run_extraction() -> bool:
                 q7_pass = False
                 break
 
-    # 8. All score values copied from source cache/artifact
-    q8_pass = True
+    # 8. Strengthened Score Integrity Check
+    master_scores_pass = True
     for dq in dossier_queries:
         qid = dq["qid"]
+        q_forensics = next((x for x in error_queries_forensics if x["qid"] == qid), {})
+        d1_ranking_map = {item["doc_id"]: item["final_ltr_score"] for item in q_forensics.get("d1_ranking", [])}
         for mg in dq["missed_golds"]:
             b_info = mg.get("boundary_vs_defender")
             if b_info:
-                def_id = b_info["rank5_defender_doc_id"]
-                q_forensics = next((x for x in error_queries_forensics if x["qid"] == qid), {})
-                expected_def_score = q_forensics.get("d1_ranking", [])[4]["final_ltr_score"]
-                if abs(b_info["defender_d1_score"] - expected_def_score) > 1e-12:
-                    q8_pass = False
+                c_id = mg["doc_id"]
+                d_id = b_info["rank5_defender_doc_id"]
+                auth_c_score = d1_ranking_map.get(c_id)
+                auth_d_score = d1_ranking_map.get(d_id)
+                if auth_c_score is None or auth_d_score is None:
+                    master_scores_pass = False
                     break
+                if abs(b_info["challenger_d1_score"] - auth_c_score) > 1e-12:
+                    master_scores_pass = False
+                    break
+                if abs(b_info["defender_d1_score"] - auth_d_score) > 1e-12:
+                    master_scores_pass = False
+                    break
+                expected_margin = auth_c_score - auth_d_score
+                if abs(b_info["margin_challenger_minus_defender"] - expected_margin) > 1e-12:
+                    master_scores_pass = False
+                    break
+                # Verify preferences recomputed
+                recomputed_prefs = compute_pairwise_preferences(q_forensics, qid, c_id, d_id, sec_scores)
+                if b_info["pairwise_preferences"] != recomputed_prefs:
+                    master_scores_pass = False
+                    break
+
+    oracle_scores_pass = True
+    opp_dict = {opp["qid"]: opp for opp in oracle_data.get("opportunity_queries", [])}
+    for oc in oracle_cases:
+        qid = oc["qid"]
+        opp = opp_dict.get(qid, {})
+        q_forensics = next((x for x in error_queries_forensics if x["qid"] == qid), {})
+        d1_ranking_map = {item["doc_id"]: item["final_ltr_score"] for item in q_forensics.get("d1_ranking", [])}
+        f_rank_map = {g["doc_id"]: g.get("d1_final_rank") for g in q_forensics.get("error_localization", [])}
+        q_sec = sec_scores.get(qid, {})
+        sorted_sec = sorted(q_sec.keys(), key=lambda d: q_sec[d], reverse=True)
+        sec_rank_dict = {d: r for r, d in enumerate(sorted_sec, 1)}
+
+        # Check nongold defenders list
+        if oc["nongold_defenders_eligible_for_removal"] != opp.get("nongolds_in_d1_top5", []):
+            oracle_scores_pass = False
+            break
+
+        all_docs = oc["missing_golds_in_section_top5"] + oc["nongold_defenders_eligible_for_removal"]
+        for d in all_docs:
+            # D1 score
+            expected_d1_s = d1_ranking_map.get(d)
+            if expected_d1_s is not None and abs(oc["d1_scores"][d] - expected_d1_s) > 1e-12:
+                oracle_scores_pass = False
+                break
+            # D1 rank
+            expected_d1_r = f_rank_map.get(d)
+            if expected_d1_r is None:
+                expected_d1_r = next((i + 1 for i, item in enumerate(q_forensics.get("d1_ranking", [])) if item["doc_id"] == d), None)
+            if oc["d1_rank_of_missing_gold"][d] != expected_d1_r:
+                oracle_scores_pass = False
+                break
+            # Section CE score
+            expected_sec_s = q_sec.get(d)
+            if expected_sec_s is not None and abs(oc["section_ce_scores"][d] - expected_sec_s) > 1e-12:
+                oracle_scores_pass = False
+                break
+            # Section rank
+            if oc["section_rank_of_missing_gold"][d] != sec_rank_dict.get(d):
+                oracle_scores_pass = False
+                break
+            # Actual old-Jina score from old_jina_cache
+            expected_old_jina = old_jina_cache.get(qid, {}).get(d)
+            if expected_old_jina is not None and abs(oc["old_jina_scores"][d] - expected_old_jina) > 1e-12:
+                oracle_scores_pass = False
+                break
+
+    selector_scores_pass = True
+    swap_diag_map = {(s["qid"], s["challenger_doc"], s["defender_doc"]): s for s in swap_data.get("swaps", [])}
+    tested_cases = (
+        selector_output_obj["beneficial_cases"]
+        + selector_output_obj["harmful_cases"]
+        + selector_output_obj["representative_neutral_cases"]
+    )
+    for c in tested_cases:
+        k = (c["qid"], c["challenger_doc"], c["defender_doc"])
+        if k not in swap_diag_map:
+            selector_scores_pass = False
+            break
+        s = swap_diag_map[k]
+        if abs(c["predicted_probability"] - s["predicted_probability"]) > 1e-12:
+            selector_scores_pass = False
+            break
+        for sub in ["challenger", "defender"]:
+            if abs(c["d1_scores"][sub] - s["d1_scores"][sub]) > 1e-12:
+                selector_scores_pass = False
+                break
+            if abs(c["old_jina_scores"][sub] - s["old_jina_scores"][sub]) > 1e-12:
+                selector_scores_pass = False
+                break
+            if abs(c["section_scores"][sub] - s["section_scores"][sub]) > 1e-12:
+                selector_scores_pass = False
+                break
+        for f_name in c["challenger_features"]:
+            if abs(c["challenger_features"][f_name] - s["challenger_features"][f_name]) > 1e-12:
+                selector_scores_pass = False
+                break
+        for f_name in c["defender_features"]:
+            if abs(c["defender_features"][f_name] - s["defender_features"][f_name]) > 1e-12:
+                selector_scores_pass = False
+                break
+        for f_name in c["delta_vector"]:
+            if abs(c["delta_vector"][f_name] - s["delta_vector"][f_name]) > 1e-12:
+                selector_scores_pass = False
+                break
+
+    q8_pass = master_scores_pass and oracle_scores_pass and selector_scores_pass
 
     # 9. No semantic free-text fields generated
     q9_pass = True
-    # Check that no keys containing 'observed_error_pattern' or 'explanation' exist in master_dossier_v2
     serialized_dossier = json.dumps(master_dossier_v2)
     if "observed_error_pattern" in serialized_dossier or "wrong_scope" in serialized_dossier.lower():
         q9_pass = False
@@ -524,30 +670,43 @@ def run_extraction() -> bool:
         "ONE_SWAP_ORACLE_AUDIT.json": sha256_file(ORACLE_AUDIT_PATH),
         "SECTION_SELECTOR_SWAP_DIAGNOSTICS.json": sha256_file(SWAP_DIAGNOSTICS_PATH),
         "legal_section_ce_cv.pkl": sha256_file(LEGAL_SECTION_PKL_PATH),
+        "jina_ft_cv.pkl": sha256_file(OLD_JINA_CACHE_PKL),
+        "holdout_extended_scores_cap32.pkl": sha256_file(HOLDOUT_EXTENDED_PKL_PATH),
         "OUTSIDE_POOL_GOLD_RECOVERY_CASES.json": sha256_file(RECOVERY_CASES_PATH),
         "V2_SHADOW_EXPANSION_RESULTS.json": sha256_file(V2_SHADOW_PATH),
     }
 
-    all_10_pass = (
+    all_integrity_pass = (
         q1_pass and q2_pass and q3_pass and q4_pass and q5_pass
         and q6_pass and q7_pass and q8_pass and q9_pass and bool(input_artifacts_sha256)
     )
 
-    integrity_status = "PASS" if all_10_pass else "BLOCKED_DOSSIER_INTEGRITY"
+    if not q8_pass:
+        integrity_status = "BLOCKED_SCORE_PROVENANCE"
+    elif not all_integrity_pass:
+        integrity_status = "BLOCKED_DOSSIER_INTEGRITY"
+    else:
+        integrity_status = "PASS"
 
     integrity_report = {
-        "schema_version": "dsc2026.gemini.dossier_v2_integrity.v1",
+        "schema_version": "dsc2026.gemini.dossier_v2_integrity.v2",
         "generation_timestamp": datetime.now(timezone.utc).isoformat(),
         "integrity_status": integrity_status,
+        "source_provenance": prov_info,
         "checks": {
             "1_qid_to_question_matches_exact_source": q1_pass,
             "2_qid_to_gold_ids_matches_exact_source": q2_pass,
             "3_doc_id_to_title_text_matches_corpus": q3_pass,
             "4_every_evidence_snippet_is_exact_substring_of_doc": q4_pass,
             "5_selector_question_matches_exact_question_of_qid": q5_pass,
-            "6_challenger_defender_exist_in_candidate_pool": q6_pass,
+            "6_challenger_defender_and_missed_golds_exist_in_exact_d1_candidate_pool": q6_pass,
             "7_d1_final_rank_reproduces_exact_d1_ranking": q7_pass,
-            "8_all_score_values_copied_from_source_cache": q8_pass,
+            "8_strengthened_deterministic_score_verification": {
+                "overall_status": q8_pass,
+                "master_dossier_in_pool_scores_and_prefs_verified": master_scores_pass,
+                "section_oracle_scores_ranks_and_actual_old_jina_verified": oracle_scores_pass,
+                "residual_selector_swaps_features_and_delta_vector_numeric_equivalence_verified": selector_scores_pass,
+            },
             "9_no_semantic_free_text_fields_generated": q9_pass,
             "10_sha256_of_all_critical_input_artifacts_recorded": True,
         },
@@ -558,12 +717,12 @@ def run_extraction() -> bool:
     out_integrity_path.write_text(json.dumps(integrity_report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  Saved {out_integrity_path} (Status: {integrity_status})")
 
-    if not all_10_pass:
-        print("BLOCKED_DOSSIER_INTEGRITY: Integrity checks failed.")
+    if integrity_status != "PASS":
+        print(f"{integrity_status}: Integrity checks failed.")
         return False
 
     # -------------------------------------------------------------
-    # 7. Generate D1_RAW_CASE_INDEX.md (Index Only)
+    # 8. Generate D1_RAW_CASE_INDEX.md (Index Only)
     # -------------------------------------------------------------
     print("\n[Index Generation] Writing D1_RAW_CASE_INDEX.md...")
     md = []
@@ -604,8 +763,8 @@ def run_extraction() -> bool:
     md.append("")
     md.append("## 4. Index of 10 Section CE One-Swap Oracle Cases")
     md.append("")
-    md.append("| QID | Block | D1 Recall@5 | Oracle Recall@5 | Delta | Missing Gold in Section Top-5 | D1 Rank | Nongold Defenders in D1 Top-5 |")
-    md.append("| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |")
+    md.append("| QID | Block | D1 Recall@5 | Oracle Recall@5 | Delta | Missing Gold in Section Top-5 | D1 Rank | Nongold Defenders in D1 Top-5 | Actual Old-Jina (Gold) |")
+    md.append("| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- | :---: |")
     for oc in oracle_cases:
         g = oc["missing_golds_in_section_top5"][0]
         d1_r = oc["d1_rank_of_missing_gold"].get(g)
@@ -613,29 +772,34 @@ def run_extraction() -> bool:
         d1_rec = f"{oc['d1_recall_at_5']:.2f}" if oc['d1_recall_at_5'] is not None else "N/A"
         orc_rec = f"{oc['oracle_recall_at_5']:.2f}" if oc['oracle_recall_at_5'] is not None else "N/A"
         gain = f"+{oc['recall_gain']:.2f}" if oc['recall_gain'] is not None else "N/A"
-        md.append(f"| `{oc['qid']}` | `{oc['block']}` | `{d1_rec}` | `{orc_rec}` | `{gain}` | `{g}` | Rank {d1_r} | {defs_str} |")
+        old_jina_val = f"{oc['old_jina_scores'].get(g):.4f}" if oc['old_jina_scores'].get(g) is not None else "N/A"
+        md.append(f"| `{oc['qid']}` | `{oc['block']}` | `{d1_rec}` | `{orc_rec}` | `{gain}` | `{g}` | Rank {d1_r} | {defs_str} | `{old_jina_val}` |")
     md.append("")
     md.append("## 5. Index of Residual Selector Swaps")
     md.append("")
     md.append("### 5.1. Beneficial Swaps (3 cases)")
     md.append("")
-    md.append("| QID | Block | Challenger (Gold) | Defender (Non-Gold) | Predicted Prob | D1 Margin | Section Scores (Chal / Def) |")
-    md.append("| :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+    md.append("| QID | Block | Challenger (Gold) | Defender (Non-Gold) | Predicted Prob | D1 Margin | Section Scores (Chal / Def) | Old-Jina (Chal / Def) |")
+    md.append("| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
     for b in selector_output_obj["beneficial_cases"]:
         c_sec = b["section_scores"]["challenger"]
         d_sec = b["section_scores"]["defender"]
+        c_oj = b["old_jina_scores"]["challenger"]
+        d_oj = b["old_jina_scores"]["defender"]
         d1_margin = b["d1_scores"]["challenger"] - b["d1_scores"]["defender"]
-        md.append(f"| `{b['qid']}` | `{b['block']}` | `{b['challenger_doc']}` | `{b['defender_doc']}` | `{b['predicted_probability']:.4f}` | `{d1_margin:.4f}` | `{c_sec:.4f}` / `{d_sec:.4f}` |")
+        md.append(f"| `{b['qid']}` | `{b['block']}` | `{b['challenger_doc']}` | `{b['defender_doc']}` | `{b['predicted_probability']:.4f}` | `{d1_margin:.4f}` | `{c_sec:.4f}` / `{d_sec:.4f}` | `{c_oj:.4f}` / `{d_oj:.4f}` |")
     md.append("")
     md.append("### 5.2. Harmful Swaps (6 cases)")
     md.append("")
-    md.append("| QID | Block | Challenger (Non-Gold) | Defender (TRUE GOLD) | Predicted Prob | D1 Margin | Section Scores (Chal / Def) |")
-    md.append("| :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+    md.append("| QID | Block | Challenger (Non-Gold) | Defender (TRUE GOLD) | Predicted Prob | D1 Margin | Section Scores (Chal / Def) | Old-Jina (Chal / Def) |")
+    md.append("| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
     for h in selector_output_obj["harmful_cases"]:
         c_sec = h["section_scores"]["challenger"]
         d_sec = h["section_scores"]["defender"]
+        c_oj = h["old_jina_scores"]["challenger"]
+        d_oj = h["old_jina_scores"]["defender"]
         d1_margin = h["d1_scores"]["challenger"] - h["d1_scores"]["defender"]
-        md.append(f"| `{h['qid']}` | `{h['block']}` | `{h['challenger_doc']}` | `{h['defender_doc']}` | `{h['predicted_probability']:.4f}` | `{d1_margin:.4f}` | `{c_sec:.4f}` / `{d_sec:.4f}` |")
+        md.append(f"| `{h['qid']}` | `{h['block']}` | `{h['challenger_doc']}` | `{h['defender_doc']}` | `{h['predicted_probability']:.4f}` | `{d1_margin:.4f}` | `{c_sec:.4f}` / `{d_sec:.4f}` | `{c_oj:.4f}` / `{d_oj:.4f}` |")
     md.append("")
     md.append("## 6. Index of CAL Legal Reference Recoveries (2 cases)")
     md.append("")
