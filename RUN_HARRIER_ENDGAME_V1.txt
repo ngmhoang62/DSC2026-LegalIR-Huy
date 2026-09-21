@@ -1,0 +1,107 @@
+HAR(R)IER ENDGAME V1 — LOCAL RTX4050
+=====================================
+
+Repo assumed:
+  D:\Study\DSC2026\sota
+
+Git Bash:
+  cd /d/Study/DSC2026/sota
+  source dsc_env_huy/Scripts/activate
+
+0) Dependencies (only if missing)
+-------------------------------
+pip install -U hnswlib peft transformers tqdm
+
+1) CPU gate FIRST
+-----------------
+Place/download Drive artifact `train_finetuned_best.json` somewhere local.
+If it is already under results/from_drive/, autodiscovery should find it.
+
+python audit_harrier_d1_gate_v1.py \
+  --repo-root /d/Study/DSC2026/sota
+
+If autodiscovery is ambiguous:
+python audit_harrier_d1_gate_v1.py \
+  --repo-root /d/Study/DSC2026/sota \
+  --harrier-train-results /d/Study/DSC2026/sota/results/from_drive/vietlegal/train_finetuned_best.json
+
+EXPECTED:
+  - exact D1 parity R=0.9569444444
+  - final line:
+      VERDICT: PROMOTE_HARRIER_PRIVATE_RANK_SPECIALIST
+    or:
+      VERDICT: KILL_HARRIER_PRIVATE_RANK_SPECIALIST
+
+DO NOT spend the night encoding corpus if the branch is KILL.
+
+Outputs:
+  results/manual/huy_harrier_d1_gate_v1/CAL_HARRIER_GATE_REPORT.json
+  results/manual/huy_harrier_d1_gate_v1/CAL_HARRIER_POLICY.json  (PROMOTE only)
+
+2) Before GPU runner: exact files required
+------------------------------------------
+A. Exact chunk-context used by fine-tune:
+   signature MUST be:
+     files = 8532
+     bytes = 380681028
+
+   Do NOT point the runner at selected-contexts.
+
+B. Checkpoint: choose ONE:
+   - final_model_merged/    (~1.19 GB full model)
+   - best_adapter/          (~40 MB adapter; base comes from HF)
+
+Because the Drive log shows only one epoch, final merged and best epoch should
+refer to the same training endpoint. Prefer final_model_merged if already local.
+
+3) Local RTX4050 run
+--------------------
+Example with merged model:
+
+python run_private_harrier_ft_local_v1.py \
+  --repo-root /d/Study/DSC2026/sota \
+  --chunk-dir /d/Study/DSC2026/sota/PUT_EXACT_CHUNK_CONTEXT_HERE \
+  --merged-model-dir /d/Study/DSC2026/sota/results/from_drive/vietlegal/vietlegal_finetuned/final_model_merged \
+  --batch-size 64 \
+  --query-batch-size 64
+
+Example with adapter:
+
+python run_private_harrier_ft_local_v1.py \
+  --repo-root /d/Study/DSC2026/sota \
+  --chunk-dir /d/Study/DSC2026/sota/PUT_EXACT_CHUNK_CONTEXT_HERE \
+  --adapter-dir /d/Study/DSC2026/sota/results/from_drive/vietlegal/vietlegal_finetuned/best_adapter \
+  --batch-size 64 \
+  --query-batch-size 64
+
+The runner automatically halves the batch on CUDA OOM.
+
+IMPORTANT RESUME:
+  corpus embedding is a resumable .npy memmap. If the process stops, rerun the
+  same command. Do NOT delete:
+    results/manual/huy_private_harrier_ft_v1/cache/
+
+Outputs:
+  results/manual/huy_private_harrier_ft_v1/PRIVATE_HARRIER_TOP200.json
+  results/manual/huy_private_harrier_ft_v1/PRIVATE_HARRIER_PARENT_RANKS.pkl
+  results/manual/huy_private_harrier_ft_v1/PRIVATE_HARRIER_REPORT.json
+
+4) CPU materialization
+----------------------
+python materialize_private_harrier_d1_v1.py \
+  --repo-root /d/Study/DSC2026/sota
+
+Mandatory safety output:
+  [PASS] D1 ordered Top5 parity 2080/2080
+
+Final ZIP:
+  results/manual/huy_private_harrier_d1_v1/D1_HARRIER_RANK_SPECIALIST_V1.zip
+
+Notes
+-----
+- No private labels are read anywhere.
+- No REL_L0 is appended.
+- Harrier is allowed to alter only D1 rank #5, and only by promoting an existing
+  D1 candidate from ranks 6..TOPN. D1 ranks 1..4 are frozen.
+- The CAL gate is contaminated by final full-train Harrier. Treat it as a
+  stability/mechanism gate, not as clean generalization evidence.

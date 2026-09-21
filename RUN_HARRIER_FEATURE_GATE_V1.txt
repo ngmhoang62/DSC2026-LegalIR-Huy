@@ -1,0 +1,26 @@
+CPU FEATURE GATE — NEXT STEP
+
+Copy audit_harrier_d1_feature_gate_v1.py to repo root.
+
+Git Bash:
+  cd /d/Study/DSC2026/sota
+  source dsc_env_huy/Scripts/activate
+
+Run:
+  python audit_harrier_d1_feature_gate_v1.py \
+    --repo-root /d/Study/DSC2026/sota
+
+If train_finetuned_best.json autodiscovery is ambiguous:
+  python audit_harrier_d1_feature_gate_v1.py \
+    --repo-root /d/Study/DSC2026/sota \
+    --harrier-train-results /d/Study/DSC2026/sota/results/from_drive/vietlegal/train_finetuned_best.json
+
+Expected mandatory parity:
+  D1 C=0.15 R=0.9569444444
+
+Send back the output from:
+  [2/5] Parsing Harrier...
+through:
+  VERDICT: ...
+
+DO NOT run Harrier GPU inference before this gate is known.
