@@ -1,26 +1,26 @@
-BUNG CAC ARTIFACT CUA KENH `base` + SCRIPT SINH RA CHUNG
-=========================================================
-Giai nen vao thu muc goc cua project (giu nguyen duong dan tuong doi).
+HARRIER (LoRA vietlegal) - DIEM SO + SCRIPT + ADAPTER
+=====================================================
+Giai nen vao thu muc goc project (giu nguyen duong dan tuong doi).
 
-ANH XA ARTIFACT -> SCRIPT TAO RA
---------------------------------
-results/jina_reranker/burst_pairwise_state.pt      <- finetune_jina_burst.py        (dong 198)
-    (kem manifest burst_pairwise_training.json)
-results/burst_large_ltr/best_model.pkl             <- tune_burst_large_ltr.py       (dong 189)
-results/burst_legal_features/validation_model.pkl  <- tune_burst_legal_features.py  (dong 190)
-results/burst_empirical_pairwise/model.pkl         <- tune_burst_empirical_pairwise.py (dong 158)
-results/burst_gpu_threeview/cpu_top20.pkl          <- run_burst_gpu_submission.py   (dong 97-140)
+FILE BAN YEU CAU
+----------------
+results/from_drive/harrier_ft_cv.pkl       diem CV 600 cau   <- score_cv_harrier_lora.py
+results/from_drive/harrier_ft_public.pkl   diem public 1000  <- score_public_harrier_lora.py
 
-THU TU DUNG LAI
----------------
-1. tune_burst_large_ltr.py          -> best_model.pkl        (XGBoost; can cache retrieval SQLite-FTS)
-2. tune_burst_legal_features.py     -> validation_model.pkl  (can cache retrieval + corpus da tokenize, ~48 phut CPU)
-3. tune_burst_empirical_pairwise.py -> model.pkl             (dung cache retrieval cua burst_large_ltr)
-4. finetune_jina_burst.py           -> burst_pairwise_state.pt (~48 giay GPU; GHI DE, khong co cache)
-5. run_burst_gpu_submission.py      -> cpu_top20.pkl         (hop 4 nhanh bang weighted_rrf; co cache theo CPU_CONFIG)
+KEM THEO (de tai tao duoc diem so)
+----------------------------------
+models/from_drive/vietlegal_finetuned_results_HNSW/vietlegal_finetuned/best_adapter/
+    adapter LoRA r=16, che do FEATURE_EXTRACTION
 
-CANH BAO
+KHONG KEM (qua nang, 3.6 GB - tai rieng neu can)
+------------------------------------------------
+models/vietlegal-harrier-0.6b/   base model: mainguyen9/vietlegal-harrier-0.6b
+
+BOI CANH
 --------
-Ca 5 artifact deu nam trong chuoi dung ban 0.9561 (results/burst_userft_maxrecall/submission.zip).
-Chay lai bat ky script nao o tren se GHI DE artifact tuong ung; rieng finetune_jina_burst.py
-khong kiem tra file ton tai. Sao luu truoc khi chay lai.
+Day la kenh cua ban burst_jf_harrier_maxrecall (CV 0.9594 - CAO NHAT tung do).
+Harrier dung rieng chi dat Recall@5 = 0.8817 (yeu nhat trong 3 model tu Drive),
+nhung tren CV no trong nhu bo khuyet cho jina_ft (bat duoc 24 gold jina_ft bo sot).
+TREN LEADERBOARD THAT NO THUA ban 0.9561 (aiteamvn_ft+jina_ft+title_embed).
+Ly do: 600 cau CV khong du de phan biet bo khuyet that voi loi ngau nhien cua
+mot model yeu; chenh lech 0.0033 nam duoi san nhieu 0.008.
