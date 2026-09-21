@@ -1,4 +1,4 @@
-results/
+/results/*
 DSC2026-LegalIR-main/
 dsc_env_huy/
 fine_tune/
@@ -10,3 +10,9 @@ __pycache__/
 cache/
 .cache/
 models/
+
+!/results/from_drive/
+/results/from_drive/*
+
+!results/from_drive/fine_tune_source_code/
+!results/from_drive/fine_tune_source_code/**
