@@ -1,5 +1,11 @@
 # burst_userft_maxrecall — gói tái tạo đầy đủ
 
+**Trạng thái 2026-09-25:** thư mục này hiện chỉ giữ source. `models/`,
+`cache/`, `results/` và bản dữ liệu cuộc thi đã được xóa; mã/notebook từng
+nằm trong artifact được giữ ở `source_archive/`. Các lệnh tái hiện từ cache và
+đường dẫn ZIP bên dưới là mô tả lịch sử, không chạy ngay trên checkout này.
+Xem [`../FINAL_SOURCE_ONLY_CLEANUP.md`](../FINAL_SOURCE_ONLY_CLEANUP.md).
+
 Tái tạo cấu hình **`burst_userft_maxrecall`** cho bộ DSC2026 LegalIR: cả phép
 đo **CV (Recall@5 = 0.9561)** lẫn **file submission** (md5 `2fb9a8a3b7`).
 
