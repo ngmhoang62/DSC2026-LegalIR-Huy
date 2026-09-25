@@ -1,16 +1,15 @@
-"""Rebuild the burst_userft_maxrecall submission from this directory alone.
+"""Rebuild a burst_userft_maxrecall candidate without changing the locked ZIP.
 
 Configuration: the production 6-channel LTR fusion + the full-pool
 cross-encoder + three extra score channels (aiteamvn_ft, jina_ft, title_embed),
 LTR trained on the 600 CV queries, threshold removed (alpha=0) so every query
 gets 5 documents. CV Recall@5 = 0.9561.
 
-Everything the run needs is bundled: the corpus, the query files, and the
-cached per-channel scores. No model weights, no GPU and no network are
-required, because every stage's scores are already computed -- the run is pure
-fusion plus selection.
+The corpus, query files, and cached scores are bundled. Score caches may have
+drifted since the locked submission was made; a mismatch is reported without
+overwriting that submission.
 
-    python reproduce.py            rebuild and verify the submission
+    python reproduce.py            rebuild a candidate and check the locked MD5
     python reproduce.py --check    verify the bundle is complete, then exit
 """
 
@@ -18,11 +17,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_MD5 = "2fb9a8a3b7"  # first 10 hex chars of submission.json
+OUTPUT_DIR = "results/burst_userft_reproduction_candidate"
 
 REQUIRED = [
     "DSC2026-LegalIR-main/v4_run/public_test_dataset/public-official.json",
@@ -60,7 +61,7 @@ REQUIRED = [
 
 ARGS = [
     "--crossenc", "--alpha", "0",
-    "--output-dir", "results/burst_userft_maxrecall",
+    "--output-dir", OUTPUT_DIR,
     "--extra-channel",
     "aiteamvn_ft=results/from_drive/aiteamvn_ft_cv.pkl,"
     "results/from_drive/aiteamvn_ft_public.pkl",
@@ -102,6 +103,12 @@ def main() -> int:
         return 0
 
     print("\n=== rebuilding submission ===", flush=True)
+    candidate_dir = ROOT / OUTPUT_DIR
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        ROOT / "results/burst_userft_maxrecall/vnlegal_scores.pkl",
+        candidate_dir / "vnlegal_scores.pkl",
+    )
     sys.path.insert(0, str(ROOT))
     import run_vnlegal_extra_channel_submission as runner
 
@@ -119,7 +126,7 @@ def main() -> int:
     finally:
         os.chdir(cwd)
 
-    out = ROOT / "results/burst_userft_maxrecall/submission.json"
+    out = ROOT / OUTPUT_DIR / "submission.json"
     digest = hashlib.md5(out.read_bytes()).hexdigest()[:10]
     print(f"\nsubmission.json md5[:10] = {digest}  (expected {EXPECTED_MD5})")
     if digest == EXPECTED_MD5:

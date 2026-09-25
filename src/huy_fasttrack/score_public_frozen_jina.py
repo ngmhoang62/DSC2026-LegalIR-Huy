@@ -26,7 +26,7 @@ from run_evidence_contract_ab import load_model
 PUBLIC = ROOT / "DSC2026-LegalIR-main/v4_run/public_test_dataset/public-official.json"
 CONTEXTS = ROOT / "DSC2026-LegalIR-main/v4_run/public_test_dataset/selected-contexts"
 POOL_DB = ROOT / "cache/research_v2_open_rl/v2_anchor_submission_candidate/public_scores.sqlite"
-MODEL = ROOT / "cache/research_v2_forensic/models/jina-reranker-v2-base-multilingual"
+MODEL = ROOT / "models/jina-reranker-v2-base-multilingual"
 OUTPUT = ROOT / "cache/huy_fasttrack/public_frozen_jina_scores.sqlite"
 
 

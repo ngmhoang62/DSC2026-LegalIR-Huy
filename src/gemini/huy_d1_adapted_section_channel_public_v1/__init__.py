@@ -1,1 +1,0 @@
-"""HUY_D1_ADAPTED_SECTION_CHANNEL_PUBLIC_V1 Experiment Package."""

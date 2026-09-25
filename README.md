@@ -39,13 +39,25 @@ Hai lần trước, "pooled tăng nhưng một block tụt" đều kéo theo lea
 
 ---
 
-## Đường 1 — dựng lại submission từ cache (khuyến nghị)
+## Đường 1 — dựng candidate từ cache (hiện cache đã drift)
+
+**Cập nhật 2026-09-25:** cache của các kênh phụ tại `results/from_drive/` và
+`results/burst_fresh_block/` đã thay đổi sau lần tạo ZIP gốc. Chạy lại hiện
+không còn đảm bảo MD5 `2fb9a8a3b7`. `reproduce.py` nay ghi vào
+`results/burst_userft_reproduction_candidate/`, kiểm tra MD5 và không ghi đè
+`results/burst_userft_maxrecall/submission.zip`. ZIP gốc đã được đối chiếu với
+bản lưu tại `results/_pre_cleanroom_historical_backup_1789395912/`: SHA-256
+`8be4219aad3ba353d033bb474e1ebc833ea3880bc998528fd84601a499c542e5`.
+Các số CV bên dưới là số lịch sử, không phải kết quả tái đo trên cache hiện tại.
+Lưu ý: `results/burst_userft_maxrecall/run_metadata.json` đã bị lần kiểm tra
+2026-09-25 ghi lại và không còn là receipt nguyên gốc; dùng ZIP/JSON và hash
+đã khóa để nhận diện submission lịch sử.
 
 ```bash
 python reproduce.py
 ```
 
-Dòng cuối phải là:
+Khi còn đúng bộ cache gốc, dòng cuối sẽ là:
 
 ```
 submission.json md5[:10] = 2fb9a8a3b7  (expected 2fb9a8a3b7)
@@ -54,7 +66,8 @@ MATCH -- reproduced exactly
 
 - Thời gian: **2–3 phút**
 - **Không cần GPU, không cần model, không cần mạng**
-- File để nộp: `results/burst_userft_maxrecall/submission.zip`
+- ZIP lịch sử đã khóa: `results/burst_userft_maxrecall/submission.zip`; lần
+  chạy mới chỉ ghi vào `results/burst_userft_reproduction_candidate/`.
 
 Kiểm tra gói đủ file mà không chạy: `python reproduce.py --check`
 

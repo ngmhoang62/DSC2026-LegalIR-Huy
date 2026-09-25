@@ -393,7 +393,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--selection", type=Path, default=Path("results/research_v2_forensic/V2_STRUCTURAL_SELECTION.jsonl"))
     p.add_argument("--historical-candidates", type=Path, required=True)
     p.add_argument("--bm25-rankings", type=Path, required=True)
-    p.add_argument("--model", type=Path, default=Path("cache/research_v2_forensic/models/jina-reranker-v2-base-multilingual"))
+    p.add_argument("--model", type=Path, default=Path("models/jina-reranker-v2-base-multilingual"))
     p.add_argument("--contexts", type=Path, required=True)
     p.add_argument("--chunks", type=Path, required=True)
     p.add_argument("--doc-to-chunks", type=Path, required=True)
